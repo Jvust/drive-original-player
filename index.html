@@ -193,6 +193,7 @@
   let tokenClient = null;
   let currentFileId = null;
   let currentResourceKey = null;
+  let currentFileSize = null;
   let serviceWorkerReady = false;
   const OAUTH_BRIDGE =
   "https://drive-oauth-bridge.143322378jb.workers.dev";
@@ -234,6 +235,65 @@ function captureOAuthSession() {
 
 
 async function getBridgeAccessToken() {
+  let tokenRefreshRunning = false;
+
+async function refreshWorkerAccessToken() {
+
+  if (
+    tokenRefreshRunning ||
+    !currentFileId ||
+    !currentFileSize ||
+    !serviceWorkerReady
+  ) {
+    return;
+  }
+
+  tokenRefreshRunning = true;
+
+  try {
+
+    const accessToken =
+      await getBridgeAccessToken();
+
+    if (!accessToken) {
+      return;
+    }
+
+    const registration =
+      await navigator.serviceWorker.ready;
+
+    const worker =
+      navigator.serviceWorker.controller ||
+      registration.active;
+
+    if (!worker) {
+      return;
+    }
+
+    worker.postMessage({
+      type: "SET_TOKEN",
+      token: accessToken,
+      fileId: currentFileId,
+      fileSize: currentFileSize
+    });
+
+    console.log(
+      "Google Drive Access Token 已自动刷新"
+    );
+
+  } catch (error) {
+
+    console.error(
+      "自动刷新 Access Token 失败：",
+      error
+    );
+
+  } finally {
+
+    tokenRefreshRunning = false;
+
+  }
+}
 
   const session =
     localStorage.getItem(
@@ -598,6 +658,7 @@ function authorizeDrive() {
 
       const file =
         await metadataResponse.json();
+      currentFileSize = Number(file.size);
 
 
       if (
@@ -747,6 +808,27 @@ if (currentResourceKey) {
 
   }
 
+  // 每 30 分钟自动更新一次 Access Token
+setInterval(
+  refreshWorkerAccessToken,
+  30 * 60 * 1000
+);
+
+// 页面放后台很久后重新回来时，马上更新
+document.addEventListener(
+  "visibilitychange",
+  () => {
+    if (!document.hidden) {
+      refreshWorkerAccessToken();
+    }
+  }
+);
+
+// 切回这个窗口时也更新
+window.addEventListener(
+  "focus",
+  refreshWorkerAccessToken
+);
 </script>
 
 </body>
