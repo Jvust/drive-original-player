@@ -235,65 +235,7 @@ function captureOAuthSession() {
 
 
 async function getBridgeAccessToken() {
-  let tokenRefreshRunning = false;
 
-async function refreshWorkerAccessToken() {
-
-  if (
-    tokenRefreshRunning ||
-    !currentFileId ||
-    !currentFileSize ||
-    !serviceWorkerReady
-  ) {
-    return;
-  }
-
-  tokenRefreshRunning = true;
-
-  try {
-
-    const accessToken =
-      await getBridgeAccessToken();
-
-    if (!accessToken) {
-      return;
-    }
-
-    const registration =
-      await navigator.serviceWorker.ready;
-
-    const worker =
-      navigator.serviceWorker.controller ||
-      registration.active;
-
-    if (!worker) {
-      return;
-    }
-
-    worker.postMessage({
-      type: "SET_TOKEN",
-      token: accessToken,
-      fileId: currentFileId,
-      fileSize: currentFileSize
-    });
-
-    console.log(
-      "Google Drive Access Token 已自动刷新"
-    );
-
-  } catch (error) {
-
-    console.error(
-      "自动刷新 Access Token 失败：",
-      error
-    );
-
-  } finally {
-
-    tokenRefreshRunning = false;
-
-  }
-}
 
   const session =
     localStorage.getItem(
@@ -354,6 +296,65 @@ async function refreshWorkerAccessToken() {
   }
 }
 
+    let tokenRefreshRunning = false;
+
+async function refreshWorkerAccessToken() {
+
+  if (
+    tokenRefreshRunning ||
+    !currentFileId ||
+    !currentFileSize ||
+    !serviceWorkerReady
+  ) {
+    return;
+  }
+
+  tokenRefreshRunning = true;
+
+  try {
+
+    const accessToken =
+      await getBridgeAccessToken();
+
+    if (!accessToken) {
+      return;
+    }
+
+    const registration =
+      await navigator.serviceWorker.ready;
+
+    const worker =
+      navigator.serviceWorker.controller ||
+      registration.active;
+
+    if (!worker) {
+      return;
+    }
+
+    worker.postMessage({
+      type: "SET_TOKEN",
+      token: accessToken,
+      fileId: currentFileId,
+      fileSize: currentFileSize
+    });
+
+    console.log(
+      "Google Drive Access Token 已自动刷新"
+    );
+
+  } catch (error) {
+
+    console.error(
+      "自动刷新 Access Token 失败：",
+      error
+    );
+
+  } finally {
+
+    tokenRefreshRunning = false;
+
+  }
+}
   let rotated = false;
 
 function toggleRotate() {
