@@ -294,12 +294,6 @@ async function getBridgeAccessToken() {
   }
 }
 
-async function initServiceWorker() {
-
-  if (!("serviceWorker" in navigator)) {
-    showError("当前浏览器不支持 Service Worker。");
-    return;
-  }
   let rotated = false;
 
 function toggleRotate() {
@@ -341,7 +335,14 @@ function toggleRotate() {
     player.style.maxWidth = "";
     player.style.maxHeight = "";
   }
-}
+}  
+async function initServiceWorker() {
+
+  if (!("serviceWorker" in navigator)) {
+    showError("当前浏览器不支持 Service Worker。");
+    return;
+  }
+
 
   try {
     await navigator.serviceWorker.register("./sw.js", {
@@ -521,69 +522,6 @@ function toggleRotate() {
   return;
 
 
-    if (
-      typeof google === "undefined" ||
-      !google.accounts ||
-      !google.accounts.oauth2
-    ) {
-
-      showError(
-        "Google 登录组件加载失败，请刷新页面后重试。"
-      );
-
-      return;
-    }
-
-
-    tokenClient =
-      google.accounts.oauth2.initTokenClient({
-
-        client_id: CLIENT_ID,
-
-        scope: SCOPES,
-
-        callback: async (response) => {
-
-          if (response.error) {
-
-            console.error(response);
-
-            setStatus("授权失败");
-
-            showError(
-              "Google Drive 授权失败：\n" +
-              response.error
-            );
-
-            return;
-          }
-
-
-          setStatus("已授权");
-
-
-          if (!currentFileId) {
-
-            document.getElementById("welcome").innerHTML = `
-              <h1>授权成功</h1>
-              <p>
-                现在回到 Google Drive，
-                右键视频 → 打开方式 → Drive Original Player
-              </p>
-            `;
-
-            return;
-          }
-
-
-          await openDriveVideo(
-            response.access_token
-          );
-
-        }
-
-      });
-
   });
 
 
@@ -598,37 +536,8 @@ function authorizeDrive() {
 
 }
 
-    showError("");
 
-    if (!tokenClient) {
-
-      showError(
-        "Google OAuth 尚未初始化，请刷新页面。"
-      );
-
-      return;
-    }
-
-
-    if (
-      CLIENT_ID.startsWith("YOUR_CLIENT_ID")
-    ) {
-
-      showError(
-        "你还没有填写 Google OAuth Client ID。\n" +
-        "先完成 Google Cloud OAuth 配置，再把 Client ID 填进代码。"
-      );
-
-      return;
-    }
-
-
-    tokenClient.requestAccessToken({
-      prompt: ""
-    });
-
-  }
-
+  
 
   /*
    * 从 Drive API 读取视频
