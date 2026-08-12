@@ -173,7 +173,7 @@
    * 用于 Drive 的“打开方式”集成
    */
 
-  const SCOPES =
+  const SCOPES =  
     "https://www.googleapis.com/auth/drive.file " +
     "https://www.googleapis.com/auth/drive.install";
 
@@ -181,8 +181,30 @@
   let tokenClient = null;
   let currentFileId = null;
   let currentResourceKey = null;
+  let serviceWorkerReady = false;
 
+async function initServiceWorker() {
 
+  if (!("serviceWorker" in navigator)) {
+    showError("当前浏览器不支持 Service Worker。");
+    return;
+  }
+
+  try {
+    await navigator.serviceWorker.register("./sw.js", {
+      scope: "./"
+    });
+
+    await navigator.serviceWorker.ready;
+
+    serviceWorkerReady = true;
+
+    console.log("Drive streaming Service Worker ready");
+
+  } catch (error) {
+    console.error("Service Worker 注册失败", error);
+  }
+}
   function setStatus(text) {
     document.getElementById("status").textContent = text;
   }
@@ -257,7 +279,9 @@
    * 初始化 Google OAuth
    */
 
-  window.addEventListener("load", () => {
+ window.addEventListener("load", async () => {
+   
+   await initServiceWorker();
 
     const driveState = parseDriveState();
 
@@ -492,12 +516,35 @@
        * 因此这里使用短期 OAuth access token。
        */
 
-      let mediaUrl =
-        "https://www.googleapis.com/drive/v3/files/" +
-        encodeURIComponent(currentFileId) +
-        "?alt=media" +
-        "&access_token=" +
-        encodeURIComponent(accessToken);
+if (!serviceWorkerReady) {
+  throw new Error(
+    "视频流服务尚未准备完成，请刷新页面后重试。"
+  );
+}
+
+const registration =
+  await navigator.serviceWorker.ready;
+
+const worker =
+  navigator.serviceWorker.controller ||
+  registration.active;
+
+worker.postMessage({
+  type: "SET_TOKEN",
+  token: accessToken
+});
+
+await new Promise(resolve => setTimeout(resolve, 200));
+
+let mediaUrl =
+  "./media/" +
+  encodeURIComponent(currentFileId);
+
+if (currentResourceKey) {
+  mediaUrl +=
+    "?resourceKey=" +
+    encodeURIComponent(currentResourceKey);
+}
 
 
       const player =
