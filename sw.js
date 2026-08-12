@@ -57,11 +57,55 @@ async function streamDriveFile(request, url, prefix) {
     "Bearer " + accessToken
   );
 
-  const range = request.headers.get("Range");
+const range = request.headers.get("Range");
 
-  if (range) {
-    headers.set("Range", range);
+const CHUNK_SIZE =
+  16 * 1024 * 1024; // 每次 16 MB
+
+if (range) {
+
+  const match =
+    /^bytes=(\d+)-(\d*)$/.exec(range);
+
+  if (
+    match &&
+    Number.isFinite(currentFileSize) &&
+    currentFileSize > 0
+  ) {
+
+    const start =
+      Number(match[1]);
+
+    let end;
+
+    if (match[2] !== "") {
+
+      // 浏览器明确指定了结束位置
+      end = Number(match[2]);
+
+    } else {
+
+      // bytes=0- 这种请求改成最多读取 16 MB
+      end = Math.min(
+        start + CHUNK_SIZE - 1,
+        currentFileSize - 1
+      );
+    }
+
+    headers.set(
+      "Range",
+      `bytes=${start}-${end}`
+    );
+
+  } else {
+
+    // 例如 bytes=-8388608 这种尾部请求保持原样
+    headers.set(
+      "Range",
+      range
+    );
   }
+}
 
   const resourceKey =
     url.searchParams.get("resourceKey");
