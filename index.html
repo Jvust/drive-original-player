@@ -194,6 +194,105 @@
   let currentFileId = null;
   let currentResourceKey = null;
   let serviceWorkerReady = false;
+  const OAUTH_BRIDGE =
+  "https://drive-oauth-bridge.143322378jb.workers.dev";
+
+const SESSION_KEY =
+  "drive_oauth_session";
+
+
+function captureOAuthSession() {
+
+  const params =
+    new URLSearchParams(
+      window.location.hash.substring(1)
+    );
+
+  const session =
+    params.get("oauth_session");
+
+  if (session) {
+
+    localStorage.setItem(
+      SESSION_KEY,
+      session
+    );
+
+    // 把 session 从地址栏清掉
+    history.replaceState(
+      null,
+      "",
+      window.location.pathname +
+      window.location.search
+    );
+
+    return true;
+  }
+
+  return false;
+}
+
+
+async function getBridgeAccessToken() {
+
+  const session =
+    localStorage.getItem(
+      SESSION_KEY
+    );
+
+  if (!session) {
+    return null;
+  }
+
+  try {
+
+    const response =
+      await fetch(
+        OAUTH_BRIDGE + "/token",
+        {
+          method: "GET",
+
+          headers: {
+            "Authorization":
+              "Bearer " + session
+          },
+
+          cache: "no-store"
+        }
+      );
+
+
+    if (!response.ok) {
+
+      // Refresh Token 失效等情况
+      if (response.status === 401) {
+        localStorage.removeItem(
+          SESSION_KEY
+        );
+      }
+
+      return null;
+    }
+
+
+    const data =
+      await response.json();
+
+    return (
+      data.access_token ||
+      null
+    );
+
+  } catch (error) {
+
+    console.error(
+      "自动获取 Access Token 失败：",
+      error
+    );
+
+    return null;
+  }
+}
 
 async function initServiceWorker() {
 
@@ -350,7 +449,76 @@ function toggleRotate() {
 
       setStatus("等待 Google Drive");
 
+    } 
+   
+   /*
+   * 检查 Cloudflare OAuth 回调
+   */
+  captureOAuthSession();
+
+
+  /*
+   * 自动获取新的 Google Access Token
+   */
+  const bridgeAccessToken =
+    await getBridgeAccessToken();
+
+
+  if (bridgeAccessToken) {
+
+    setStatus("已自动授权");
+
+    /*
+     * 如果刚完成第一次授权，
+     * 当前页面可能没有 Drive file ID。
+     */
+    if (!currentFileId) {
+
+      document.getElementById(
+        "welcome"
+      ).innerHTML = `
+        <h1>长期授权成功</h1>
+        <p>
+          以后打开视频无需再次手动授权。
+          <br><br>
+          现在回到 Google Drive，
+          右键视频 → 打开方式 →
+          Drive Original Player
+        </p>
+      `;
+
+      return;
     }
+
+
+    /*
+     * 已经从 Drive 打开了某个视频：
+     * 直接播放
+     */
+    await openDriveVideo(
+      bridgeAccessToken
+    );
+
+    return;
+  }
+
+
+  /*
+   * 没有长期授权时
+   */
+  setStatus("需要首次授权");
+
+  const loginButton =
+    document.getElementById(
+      "loginBtn"
+    );
+
+  if (loginButton) {
+    loginButton.textContent =
+      "首次授权 Google Drive";
+  }
+
+  return;
 
 
     if (
@@ -423,7 +591,12 @@ function toggleRotate() {
    * 点击按钮触发 Google 授权
    */
 
-  function authorizeDrive() {
+function authorizeDrive() {
+
+  window.location.href =
+    OAUTH_BRIDGE + "/auth";
+
+}
 
     showError("");
 
