@@ -20,6 +20,15 @@
       font-family: Arial, Helvetica, sans-serif;
       min-height: 100vh;
     }
+    #player {
+  transition: transform 0.25s ease;
+  transform-origin: center center;
+  object-fit: contain;
+}
+
+#player.rotated {
+  transform: rotate(90deg);
+}
 
     header {
       height: 58px;
@@ -144,6 +153,9 @@
       preload="auto"
       controlsList="nodownload">
     </video>
+    <button id="rotateBtn" onclick="toggleRotate()">
+  旋转 90°
+</button>
 
     <div id="info">
       <div id="filename"></div>
@@ -189,6 +201,48 @@ async function initServiceWorker() {
     showError("当前浏览器不支持 Service Worker。");
     return;
   }
+  let rotated = false;
+
+function toggleRotate() {
+
+  const player =
+    document.getElementById("player");
+
+  rotated = !rotated;
+
+  if (rotated) {
+
+    player.classList.add("rotated");
+
+    /*
+     * 旋转之后宽高交换，
+     * 避免竖屏视频被裁掉。
+     */
+    const availableHeight =
+      window.innerHeight - 150;
+
+    const availableWidth =
+      window.innerWidth - 60;
+
+    player.style.width =
+      availableHeight + "px";
+
+    player.style.height =
+      availableWidth + "px";
+
+    player.style.maxWidth = "none";
+    player.style.maxHeight = "none";
+
+  } else {
+
+    player.classList.remove("rotated");
+
+    player.style.width = "";
+    player.style.height = "";
+    player.style.maxWidth = "";
+    player.style.maxHeight = "";
+  }
+}
 
   try {
     await navigator.serviceWorker.register("./sw.js", {
