@@ -1,4 +1,6 @@
 let accessToken = null;
+let currentFileId = null;
+let currentFileSize = null;
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -11,6 +13,8 @@ self.addEventListener("activate", event => {
 self.addEventListener("message", event => {
   if (event.data && event.data.type === "SET_TOKEN") {
     accessToken = event.data.token;
+    currentFileId = event.data.fileId;
+    currentFileSize = Number(event.data.fileSize);
   }
 });
 
@@ -135,6 +139,51 @@ if (!cleanHeaders.get("Content-Type")) {
     "Content-Type",
     "video/mp4"
   );
+}
+    const requestedRange =
+  request.headers.get("Range");
+
+const returnedLength =
+  Number(cleanHeaders.get("Content-Length"));
+
+if (
+  response.status === 206 &&
+  requestedRange &&
+  fileId === currentFileId &&
+  Number.isFinite(currentFileSize) &&
+  currentFileSize > 0 &&
+  Number.isFinite(returnedLength) &&
+  returnedLength > 0
+) {
+
+  const match =
+    /^bytes=(\d*)-(\d*)$/.exec(requestedRange);
+
+  if (match) {
+
+    let start = null;
+
+    if (match[1] !== "") {
+      start = Number(match[1]);
+    }
+    else if (match[2] !== "") {
+      start = currentFileSize - returnedLength;
+    }
+
+    if (
+      Number.isFinite(start) &&
+      start >= 0
+    ) {
+
+      const end =
+        start + returnedLength - 1;
+
+      cleanHeaders.set(
+        "Content-Range",
+        `bytes ${start}-${end}/${currentFileSize}`
+      );
+    }
+  }
 }
 
 return new Response(
