@@ -89,13 +89,27 @@ async function streamDriveFile(request, url, prefix) {
         }
       );
 
-      const responseHeaders =
-        new Headers(response.headers);
+const responseHeaders =
+  new Headers(response.headers);
 
-      return new Response(null, {
-        status: response.ok ? 200 : response.status,
-        headers: responseHeaders
-      });
+responseHeaders.delete("Content-Disposition");
+
+responseHeaders.set(
+  "Accept-Ranges",
+  "bytes"
+);
+
+if (!responseHeaders.get("Content-Type")) {
+  responseHeaders.set(
+    "Content-Type",
+    "video/mp4"
+  );
+}
+
+return new Response(null, {
+  status: response.ok ? 200 : response.status,
+  headers: responseHeaders
+});
     }
 
     const response = await fetch(
@@ -106,14 +120,31 @@ async function streamDriveFile(request, url, prefix) {
       }
     );
 
-    return new Response(
-      response.body,
-      {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
-      }
-    );
+const cleanHeaders =
+  new Headers(response.headers);
+
+cleanHeaders.delete("Content-Disposition");
+
+cleanHeaders.set(
+  "Accept-Ranges",
+  "bytes"
+);
+
+if (!cleanHeaders.get("Content-Type")) {
+  cleanHeaders.set(
+    "Content-Type",
+    "video/mp4"
+  );
+}
+
+return new Response(
+  response.body,
+  {
+    status: response.status,
+    statusText: response.statusText,
+    headers: cleanHeaders
+  }
+);
 
   } catch (error) {
 
