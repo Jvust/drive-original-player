@@ -531,7 +531,9 @@ const worker =
 
 worker.postMessage({
   type: "SET_TOKEN",
-  token: accessToken
+  token: accessToken,
+  fileId: currentFileId,
+  fileSize: Number(file.size)
 });
 
 await new Promise(resolve => setTimeout(resolve, 200));
