@@ -55,6 +55,40 @@
       display: block;
     }
 
+    #seekHoldOverlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 36;
+      background: #000;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    #seekHoldOverlay.active {
+      display: block;
+    }
+
+    #seekHoldCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
+    #seekHoldText {
+      position: absolute;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.68);
+      color: rgba(255,255,255,.90);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
     #playerWrap.gpu-active #player {
       opacity: 0;
       pointer-events: none;
@@ -177,6 +211,34 @@
       max-width: 1500px;
     }
 
+    #backgroundShowcase {
+      display: none;
+      width: min(1500px, 100%);
+      min-height: 100vh;
+      margin-top: 28px;
+      position: relative;
+      pointer-events: none;
+    }
+
+    body.media-ready main {
+      justify-content: flex-start;
+    }
+
+    body.media-ready #backgroundShowcase {
+      display: block;
+    }
+
+    .background-showcase-hint {
+      position: absolute;
+      left: 50%;
+      top: 20px;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,.22);
+      font-size: 10px;
+      letter-spacing: .28em;
+      user-select: none;
+    }
+
     video {
       display: block;
       width: 100%;
@@ -194,6 +256,40 @@
     .player-tools button {
       padding: 9px 14px;
       font-size: 13px;
+    }
+
+    .quality-mode-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      min-height: 38px;
+      border: 1px solid rgba(255,255,255,.10);
+      border-radius: 9px;
+      background: rgba(20,20,20,.72);
+      color: #d9d9d9;
+      font-size: 13px;
+    }
+
+    .quality-mode-control select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 0;
+      outline: 0;
+      padding: 7px 26px 7px 9px;
+      border-radius: 7px;
+      background:
+        linear-gradient(45deg, transparent 50%, #aaa 50%) right 10px center / 5px 5px no-repeat,
+        linear-gradient(135deg, #aaa 50%, transparent 50%) right 6px center / 5px 5px no-repeat,
+        rgba(255,255,255,.08);
+      color: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .quality-mode-control select option {
+      background: #171717;
+      color: #fff;
     }
 
     /* 批量视频：列表只在用户主动打开时覆盖画面。 */
@@ -552,6 +648,21 @@
       backdrop-filter: blur(8px);
     }
 
+    #playerWrap:fullscreen #videoQuickControls,
+    #playerWrap:-webkit-full-screen #videoQuickControls {
+      top: max(14px, env(safe-area-inset-top));
+      right: max(14px, env(safe-area-inset-right));
+      z-index: 72;
+    }
+
+    #playerWrap:fullscreen #videoListBtn,
+    #playerWrap:-webkit-full-screen #videoListBtn {
+      min-width: 54px;
+      font-weight: 700;
+      background: rgba(10,10,10,.78);
+      border: 1px solid rgba(255,255,255,.16);
+    }
+
     #playerWrap:fullscreen #videoPlaylistDrawer,
     #playerWrap:-webkit-full-screen #videoPlaylistDrawer {
       position: absolute;
@@ -737,9 +848,13 @@
         controls
         playsinline
         preload="auto"
-        controlsList="nodownload">
+        controlsList="nodownload nofullscreen noremoteplayback">
       </video>
       <canvas id="gpuCanvas" aria-label="WebGPU 视频画面"></canvas>
+      <div id="seekHoldOverlay" aria-live="polite">
+        <canvas id="seekHoldCanvas"></canvas>
+        <div id="seekHoldText">正在跳转…</div>
+      </div>
     </div>
 
     <div id="videoQuickControls" aria-label="视频快捷控制">
@@ -766,6 +881,8 @@
       <span id="gpuTime">00:00 / 00:00</span>
       <button id="gpuMuteBtn" onclick="gpuToggleMute()">静音</button>
       <input id="gpuVolume" type="range" min="0" max="1" value="1" step="0.05" aria-label="音量" />
+      <button id="gpuListBtn" onclick="toggleVideoPlaylist()" title="打开 1433223 文件树">列表</button>
+      <button id="gpuFullscreenBtn" onclick="toggleWebFullscreen()" title="网页全屏；全屏右上角保留列表入口">全屏</button>
     </div>
 
     <div class="player-tools">
@@ -775,9 +892,14 @@
       <button id="webFullscreenBtn" onclick="toggleWebFullscreen()" title="全屏后控件会自动隐藏；移动鼠标或触摸屏幕可再次显示">
         全屏
       </button>
-      <button id="sharpenBtn" onclick="cycleSharpenMode()" title="只改变显示效果，不修改 Google Drive 原视频">
-        画质：平衡
-      </button>
+      <label class="quality-mode-control" title="手动画质模式；默认平衡，不会自动切换到流畅">
+        <span>画质</span>
+        <select id="qualityModeSelect" onchange="setQualityModeFromUi(this.value)">
+          <option value="1" selected>平衡</option>
+          <option value="2">清晰</option>
+          <option value="0">流畅</option>
+        </select>
+      </label>
       <button id="diagnosticBtn" onclick="toggleDiagnostic()">
         画质诊断
       </button>
@@ -793,6 +915,10 @@
       <div id="quality"></div>
     </div>
   </div>
+
+  <section id="backgroundShowcase" aria-label="背景展示区">
+    <div class="background-showcase-hint">BACKGROUND</div>
+  </section>
 
 </main>
 
@@ -813,6 +939,15 @@
   let videoRootFolder = null;
   const VIDEO_ROOT_FOLDER_NAME = "1433223";
   const expandedVideoFolders = new Set();
+
+  // 背景直接来自 1433223 递归目录中的图片，不再打包静态壁纸。
+  let backgroundImageFiles = [];
+  let backgroundShuffleQueue = [];
+  let backgroundTimer = null;
+  let backgroundVisibleLayer = null;
+  let backgroundHiddenLayer = null;
+  let backgroundVisibleObjectUrl = null;
+  let backgroundPending = false;
   let videoPlayerEventsReady = false;
   let videoUiTimer = null;
   let userActivityFlag = true;
@@ -820,8 +955,9 @@
   let gpuHealthTimer = null;
   let gpuHealthPrevTotal = 0;
   let gpuHealthPrevDropped = 0;
-  let performanceFallback =
-    sessionStorage.getItem("drive_player_gpu_fallback") === "1";
+  // 画质模式改为完全手动。旧版本留下的自动流畅标记不再生效。
+  sessionStorage.removeItem("drive_player_gpu_fallback");
+  let performanceFallback = false;
   const VIDEO_UI_HIDE_DELAY = 2200;
 
   /*
@@ -852,6 +988,7 @@
     return uaMobile || androidOrMobile || touchTablet;
   }
 
+  // 仅用于相邻视频预热的带宽/设备启发式判断，不再控制画质模式。
   const smoothDeviceMode = detectSmoothDevice();
   let serviceWorkerReady = false;
   const OAUTH_BRIDGE =
@@ -1080,14 +1217,15 @@ let gpuScaleMode = "native";
 let gpuLastScaleRatio = 1;
 
 let sharpenMode = 1;
-const SHARPEN_LABELS = ["原始", "平衡", "清晰"];
+const SHARPEN_LABELS = ["流畅", "平衡", "清晰"];
 const SHARPEN_FILTERS = [
   "none",
   'url("#videoSharpenMild")',
   'url("#videoSharpenStrong")'
 ];
-// “原始”只关闭额外锐化；智能缩放仍保留高质量重采样。
-// 平衡/清晰使用较克制的 RCAS-style 强度，避免 halo。
+// 流畅：手动关闭 WebGPU 后处理，直接使用浏览器原生 <video>。
+// 平衡/清晰：使用 WebGPU 智能缩放 + 克制的 RCAS-style 强度。
+// 默认 sharpenMode = 1，即“平衡”。
 const GPU_SHARPEN_STRENGTH = [0.0, 0.30, 0.52];
 
 function gpuSupported() {
@@ -1723,7 +1861,10 @@ async function enableWebGPUEnhancement() {
   updateDiagnostic();
 }
 
-function disableWebGPUEnhancement(fromError = false) {
+function disableWebGPUEnhancement(
+  fromError = false,
+  skipApply = false
+) {
   gpuActive = false;
   cancelGpuFrames();
   setGpuUiActive(false);
@@ -1735,59 +1876,108 @@ function disableWebGPUEnhancement(fromError = false) {
   );
 
   // WebGPU 不可用时，SVG 锐化只作为兼容性 fallback。
-  applySharpenMode();
+  if (!skipApply) {
+    applySharpenMode();
+  }
+
   updateDiagnostic();
 }
 
 function applySharpenMode() {
   const player = document.getElementById("player");
-  const button = document.getElementById("sharpenBtn");
+  const selector = document.getElementById("qualityModeSelect");
 
   if (!player) return;
 
-  if (smoothDeviceMode || performanceFallback) {
-    sharpenMode = 0;
+  /*
+   * 手动“流畅”：
+   * - 不使用 WebGPU 后处理
+   * - 不使用 SVG 锐化
+   * - 直接使用浏览器原生 <video>
+   *
+   * 不再因为手机/平板判断或 dropped frames 自动进入流畅。
+   */
+  if (sharpenMode === 0) {
+    if (gpuActive) {
+      disableWebGPUEnhancement(
+        false,
+        true
+      );
+    }
+
     player.style.filter = "none";
     player.style.webkitFilter = "none";
-    if (button) {
-      button.textContent = performanceFallback
-        ? "画质：流畅（自动）"
-        : "画质：流畅";
+
+    if (selector) {
+      selector.value = "0";
     }
+
+    setStatus(
+      "Original · 流畅模式（手动）"
+    );
+
     updateDiagnostic();
     return;
   }
 
   if (gpuActive) {
-    // WebGPU shader 负责锐化；不要再给视频本身叠加 SVG filter。
+    // 平衡 / 清晰由 WebGPU shader 负责，不再叠加 SVG filter。
     player.style.filter = "none";
     player.style.webkitFilter = "none";
     renderGpuFrame();
   } else {
-    const value = SHARPEN_FILTERS[sharpenMode] || "none";
+    // WebGPU 尚未启动或不可用时的兼容 fallback。
+    const value =
+      SHARPEN_FILTERS[sharpenMode] ||
+      "none";
+
     player.style.filter = value;
     player.style.webkitFilter = value;
   }
 
-  if (button) {
-    button.textContent =
-      "画质：" + SHARPEN_LABELS[sharpenMode];
+  if (selector) {
+    selector.value = String(sharpenMode);
   }
 
   updateDiagnostic();
 }
 
-function cycleSharpenMode() {
-  if (smoothDeviceMode) {
+async function setQualityModeFromUi(value) {
+  const next = Number(value);
+
+  if (![0, 1, 2].includes(next)) {
+    return;
+  }
+
+  sharpenMode = next;
+
+  const player =
+    document.getElementById("player");
+
+  if (sharpenMode === 0) {
     applySharpenMode();
     return;
   }
 
-  sharpenMode =
-    (sharpenMode + 1) %
-    SHARPEN_LABELS.length;
-
   applySharpenMode();
+
+  if (
+    player &&
+    player.readyState >= 2 &&
+    !gpuActive &&
+    !gpuInitializing
+  ) {
+    await enableWebGPUEnhancement();
+    applySharpenMode();
+  }
+}
+
+async function cycleSharpenMode() {
+  const order = [1, 2, 0];
+  const at = Math.max(0, order.indexOf(sharpenMode));
+  await setQualityModeFromUi(
+    order[(at + 1) % order.length]
+  );
 }
 
 function gpuTogglePlay() {
@@ -1845,14 +2035,14 @@ function syncGpuMediaControls() {
   ) {
     seek.value = String(
       Math.round(
-        (player.currentTime / player.duration) * 1000
+        ((seekPendingTarget ?? player.currentTime) / player.duration) * 1000
       )
     );
   }
 
   if (time) {
     time.textContent =
-      formatSeconds(player.currentTime) +
+      formatSeconds(seekPendingTarget ?? player.currentTime) +
       " / " +
       formatSeconds(player.duration);
   }
@@ -1890,6 +2080,7 @@ function initGpuMediaControls() {
 
   player.addEventListener("loadeddata", () => {
     renderGpuFrame();
+    prepareSeekRescueForCurrentFile();
   });
 
   if (seek) {
@@ -1927,6 +2118,10 @@ function initGpuMediaControls() {
       }
       gpuSeeking = false;
     };
+
+    seek.addEventListener("pointerdown", () => {
+      loadMediabunnyModule().catch(() => {});
+    }, { passive: true });
 
     seek.addEventListener("change", commitSeek);
     seek.addEventListener("pointerup", commitSeek);
@@ -2073,9 +2268,11 @@ function updateWebFullscreenButton() {
   const fullscreen = !!getFullscreenElement();
   const button = document.getElementById("webFullscreenBtn");
   const fab = document.getElementById("fullscreenFab");
+  const gpuButton = document.getElementById("gpuFullscreenBtn");
 
   if (button) button.textContent = fullscreen ? "退出全屏" : "全屏";
   if (fab) fab.textContent = fullscreen ? "退出" : "全屏";
+  if (gpuButton) gpuButton.textContent = fullscreen ? "退出" : "全屏";
 
   if (fullscreen) {
     const active = document.activeElement;
@@ -2301,7 +2498,8 @@ function buildDiagnosticText() {
     "",
     "说明：Drive 端仍读取原文件；视频解码交给浏览器成熟的硬件媒体栈。",
     "WebGPU 会按物理显示尺寸自动选择 1:1、边缘自适应放大或线性光高质量缩小；",
-    "手机/平板和持续掉帧设备仍自动使用原生 <video>，优先保证流畅。",
+    "画质模式改为手动选择：默认「平衡」；「流畅」会关闭 WebGPU 后处理并使用原生 <video>。",
+    "手机/平板或检测到掉帧时不会自动改画质；若出现掉帧，可手动切换到「流畅」。",
     "异常 MP4 若原生 Seek 卡住，会自动启用 Mediabunny 随机读取 + fMP4/MSE Rescue；能无损复制编码时不会重新编码。"
   ].join("\n");
 }
@@ -2481,6 +2679,12 @@ async function initServiceWorker() {
     return /\.(mp4|m4v|mov|webm|mkv)$/i.test(file.name || "");
   }
 
+  function isImageFile(file) {
+    if (!file) return false;
+    if (file.mimeType && file.mimeType.startsWith("image/")) return true;
+    return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name || "");
+  }
+
   function driveListFields(mediaMetadataField) {
     return [
       "id",
@@ -2636,6 +2840,11 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
+        if (isImageFile(file)) {
+          backgroundImageFiles.push(file);
+          continue;
+        }
+
         if (isDriveFolder(file) || isVideoFile(file)) {
           allItems.push(file);
         }
@@ -3118,6 +3327,169 @@ async function initServiceWorker() {
     }
   }
 
+
+  function shuffleBackgroundFiles(files) {
+    const copy = files.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  async function waitForBackgroundBandwidth() {
+    const player = document.getElementById("player");
+
+    // 播放正在缓冲时不和视频抢 Drive 带宽；稳定后继续 5 秒轮播。
+    if (
+      player &&
+      !player.paused &&
+      (
+        player.readyState < 3 ||
+        getBufferedAhead(player) < 4
+      )
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return waitForBackgroundBandwidth();
+    }
+  }
+
+  async function prepareDriveBackgroundObjectUrl(file) {
+    if (!file || !file.id || !currentAccessToken) {
+      return null;
+    }
+
+    await waitForBackgroundBandwidth();
+
+    const registration = await navigator.serviceWorker.ready;
+    const worker = navigator.serviceWorker.controller || registration.active;
+
+    if (!worker) return null;
+
+    await postWorkerMessage(
+      worker,
+      {
+        type: "SET_TOKEN",
+        token: currentAccessToken,
+        fileId: file.id,
+        fileSize: Number(file.size)
+      },
+      320
+    );
+
+    const response = await fetch(
+      getMediaUrlForFile(file),
+      {
+        cache: "no-store"
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        "背景图片读取失败：HTTP " + response.status
+      );
+    }
+
+    const blob = await response.blob();
+    if (!blob.size) return null;
+
+    return URL.createObjectURL(blob);
+  }
+
+  function scheduleDriveBackgroundNext(delay = 5000) {
+    clearTimeout(backgroundTimer);
+    backgroundTimer = setTimeout(showNextDriveBackground, delay);
+  }
+
+  async function showNextDriveBackground() {
+    if (
+      backgroundPending ||
+      !backgroundImageFiles.length ||
+      document.hidden
+    ) {
+      scheduleDriveBackgroundNext(1000);
+      return;
+    }
+
+    backgroundPending = true;
+
+    try {
+      if (!backgroundShuffleQueue.length) {
+        backgroundShuffleQueue =
+          shuffleBackgroundFiles(backgroundImageFiles);
+      }
+
+      const file = backgroundShuffleQueue.shift();
+      const objectUrl =
+        await prepareDriveBackgroundObjectUrl(file);
+
+      if (!objectUrl) {
+        scheduleDriveBackgroundNext(800);
+        return;
+      }
+
+      backgroundHiddenLayer.style.backgroundImage =
+        `url("${objectUrl}")`;
+
+      // 让浏览器先完成一次样式提交，再淡入。
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      backgroundHiddenLayer.classList.add("is-visible");
+      backgroundVisibleLayer.classList.remove("is-visible");
+
+      const oldLayer = backgroundVisibleLayer;
+      backgroundVisibleLayer = backgroundHiddenLayer;
+      backgroundHiddenLayer = oldLayer;
+
+      const oldUrl = backgroundVisibleObjectUrl;
+      backgroundVisibleObjectUrl = objectUrl;
+
+      if (oldUrl) {
+        setTimeout(() => {
+          try { URL.revokeObjectURL(oldUrl); } catch (_) {}
+        }, 900);
+      }
+
+      scheduleDriveBackgroundNext(5000);
+    } catch (error) {
+      console.debug("Drive 背景轮播读取失败：", error);
+      scheduleDriveBackgroundNext(1800);
+    } finally {
+      backgroundPending = false;
+    }
+  }
+
+  function startDriveBackgroundSlideshow() {
+    clearTimeout(backgroundTimer);
+
+    const a = document.getElementById("pageBgSlideA");
+    const b = document.getElementById("pageBgSlideB");
+
+    if (!a || !b) return;
+
+    backgroundVisibleLayer = a;
+    backgroundHiddenLayer = b;
+    backgroundShuffleQueue = [];
+
+    a.style.backgroundImage = "none";
+    b.style.backgroundImage = "none";
+    a.classList.add("is-visible");
+    b.classList.remove("is-visible");
+
+    if (!backgroundImageFiles.length) {
+      setStatus("Original · 1433223 中没有可用于背景的图片");
+      return;
+    }
+
+    showNextDriveBackground();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && backgroundImageFiles.length) {
+      scheduleDriveBackgroundNext(350);
+    }
+  });
+
   function renderVideoPlaylist() {
     const items =
       document.getElementById("videoPlaylistItems");
@@ -3590,8 +3962,11 @@ async function initServiceWorker() {
     }
 
     const player = document.getElementById("player");
-    if ((smoothDeviceMode || performanceFallback) && gpuActive) {
-      disableWebGPUEnhancement(false);
+    if (sharpenMode === 0 && gpuActive) {
+      disableWebGPUEnhancement(
+        false,
+        true
+      );
     }
 
     // 借鉴成熟播放器的 poster 体验：真正视频帧出来前先显示 Drive 缩略图。
@@ -3603,9 +3978,13 @@ async function initServiceWorker() {
     applySharpenMode();
 
     setStatus(
-      (smoothDeviceMode || performanceFallback)
-        ? (performanceFallback ? "Original · 流畅模式（自动）" : "Original · 流畅模式")
-        : (gpuActive ? "Original · WebGPU 高质量渲染" : "Original · 准备高质量渲染")
+      sharpenMode === 0
+        ? "Original · 流畅模式（手动）"
+        : (
+            gpuActive
+              ? "Original · WebGPU 高质量渲染"
+              : "Original · 准备高质量渲染"
+          )
     );
 
     if (autoplay) {
@@ -3648,8 +4027,6 @@ async function initServiceWorker() {
         !player ||
         player.paused ||
         !gpuActive ||
-        smoothDeviceMode ||
-        performanceFallback ||
         typeof player.getVideoPlaybackQuality !== "function"
       ) {
         return;
@@ -3669,15 +4046,17 @@ async function initServiceWorker() {
 
         const ratio = deltaDropped / deltaTotal;
 
-        // 持续掉帧约 3.5% 以上时自动回退，优先保证观看流畅。
+        /*
+         * 画质模式现在完全由用户手动控制。
+         * 检测到持续掉帧时只提示，不自动改成“流畅”。
+         */
         if (deltaDropped >= 6 && ratio >= 0.035) {
-          performanceFallback = true;
-          sessionStorage.setItem("drive_player_gpu_fallback", "1");
-          disableWebGPUEnhancement(false);
-          applySharpenMode();
-          setStatus("Original · 流畅模式（自动）");
+          setStatus(
+            "检测到持续掉帧 · 可手动选择「画质：流畅」"
+          );
+
           console.warn(
-            "检测到 WebGPU 渲染掉帧，已自动切换到原生视频渲染。",
+            "检测到 WebGPU 渲染掉帧。当前为手动画质模式，未自动切换。",
             { deltaTotal, deltaDropped, ratio }
           );
         }
@@ -3703,17 +4082,21 @@ async function initServiceWorker() {
     });
 
     player.addEventListener("loadeddata", async () => {
-      if (!smoothDeviceMode && !performanceFallback && !gpuActive && !gpuInitializing) {
+      if (
+        sharpenMode !== 0 &&
+        !gpuActive &&
+        !gpuInitializing
+      ) {
         await enableWebGPUEnhancement();
-      } else if (smoothDeviceMode || performanceFallback) {
+        applySharpenMode();
+      } else if (sharpenMode === 0) {
         setGpuUiActive(false);
         applySharpenMode();
         setStatus(
-          performanceFallback
-            ? "Original · 流畅模式（自动）"
-            : "Original · 流畅模式"
+          "Original · 流畅模式（手动）"
         );
       }
+
       syncGpuCanvasSize();
       renderGpuFrame();
       updateDiagnostic();
@@ -3791,11 +4174,11 @@ async function initServiceWorker() {
    * 正常文件继续原生 <video>；仅 Seek 卡住时加载本模块。
    */
 
-  const SEEK_RESCUE_TIMEOUT_MS = 2600;
-  const SEEK_RESCUE_DEBOUNCE_MS = 220;
-  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 24;
-  const SEEK_RESCUE_REFILL_OUTPUT_SEC = 22;
-  const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 7;
+  const SEEK_RESCUE_TIMEOUT_MS = 1200;
+  const SEEK_RESCUE_DEBOUNCE_MS = 150;
+  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 10;
+  const SEEK_RESCUE_REFILL_OUTPUT_SEC = 16;
+  const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 5;
   const SEEK_RESCUE_WINDOW_BACK_SEC = 6;
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
@@ -3810,6 +4193,111 @@ async function initServiceWorker() {
   let seekRescueProbe = null;
   let seekRescueDebounceTimer = null;
   let seekRescueInternalChange = false;
+  let seekPendingTarget = null;
+  let seekRescuePreparedSession = null;
+  let seekRescuePreparedFileId = null;
+
+
+  function showSeekHoldOverlay(targetTime) {
+    const overlay = document.getElementById("seekHoldOverlay");
+    const canvas = document.getElementById("seekHoldCanvas");
+    const text = document.getElementById("seekHoldText");
+    const player = document.getElementById("player");
+    const stage = document.getElementById("videoStage");
+
+    seekPendingTarget = targetTime;
+
+    if (text) {
+      text.textContent =
+        "正在跳转到 " + formatSeconds(targetTime) + "…";
+    }
+
+    if (canvas && player && stage) {
+      try {
+        const rect = stage.getBoundingClientRect();
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        canvas.width = Math.max(1, Math.round(rect.width * dpr));
+        canvas.height = Math.max(1, Math.round(rect.height * dpr));
+
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (player.videoWidth && player.videoHeight && player.readyState >= 2) {
+          const scale = Math.min(
+            canvas.width / player.videoWidth,
+            canvas.height / player.videoHeight
+          );
+          const w = player.videoWidth * scale;
+          const h = player.videoHeight * scale;
+          const x = (canvas.width - w) / 2;
+          const y = (canvas.height - h) / 2;
+          ctx.drawImage(player, x, y, w, h);
+        }
+      } catch (_) {}
+    }
+
+    overlay?.classList.add("active");
+    syncGpuMediaControls();
+  }
+
+  function hideSeekHoldOverlay() {
+    document.getElementById("seekHoldOverlay")
+      ?.classList.remove("active");
+    seekPendingTarget = null;
+    syncGpuMediaControls();
+  }
+
+  async function prepareSeekRescueForCurrentFile() {
+    const file = videoPlaylist[currentVideoIndex];
+    const player = document.getElementById("player");
+
+    if (
+      !file ||
+      !player ||
+      !isSeekRescueRemembered(file.id) ||
+      (
+        file.mimeType !== "video/mp4" &&
+        !/\.mp4$/i.test(file.name || "")
+      ) ||
+      seekRescueSession ||
+      seekRescueActivation
+    ) {
+      return;
+    }
+
+    if (
+      seekRescuePreparedSession &&
+      seekRescuePreparedFileId === file.id
+    ) {
+      return;
+    }
+
+    if (seekRescuePreparedSession) {
+      seekRescuePreparedSession.destroy().catch(() => {});
+    }
+
+    const session = new MediabunnySeekRescueSession(
+      player,
+      file,
+      getMediaUrlForFile(file),
+      Number.isFinite(player.duration) ? player.duration : 0
+    );
+
+    seekRescuePreparedSession = session;
+    seekRescuePreparedFileId = file.id;
+
+    try {
+      await session.prepareInput();
+    } catch (error) {
+      console.debug("Seek Rescue 预热失败：", error);
+      if (seekRescuePreparedSession === session) {
+        seekRescuePreparedSession = null;
+        seekRescuePreparedFileId = null;
+      }
+      session.destroy().catch(() => {});
+    }
+  }
 
   function loadMediabunnyModule() {
     if (!mediabunnyModulePromise) {
@@ -4048,7 +4536,7 @@ async function initServiceWorker() {
           {
             maxCacheSize:
               24 * 1024 * 1024,
-            parallelism: 4,
+            parallelism: 6,
             requestInit: {
               cache: "no-store"
             }
@@ -4495,7 +4983,7 @@ async function initServiceWorker() {
       const format =
         new Mp4OutputFormat({
           fastStart: "fragmented",
-          minimumFragmentDuration: 1,
+          minimumFragmentDuration: 0.5,
 
           onFtyp: data => {
             if (
@@ -4696,7 +5184,7 @@ async function initServiceWorker() {
       const initialUntil =
         Math.max(
           SEEK_RESCUE_INITIAL_OUTPUT_SEC,
-          relativeTarget + 10
+          relativeTarget + 4
         );
 
       await this.executeUntil(
@@ -4708,7 +5196,7 @@ async function initServiceWorker() {
       const buffered =
         await this.waitUntilBuffered(
           target,
-          16000
+          9000
         );
 
       if (!buffered) {
@@ -4735,6 +5223,7 @@ async function initServiceWorker() {
 
       this.active = true;
       this.phase = "播放中";
+      hideSeekHoldOverlay();
       this.startRefillLoop();
     }
 
@@ -4858,8 +5347,12 @@ async function initServiceWorker() {
 
     const oldSession =
       seekRescueSession;
+    const oldPrepared =
+      seekRescuePreparedSession;
 
     seekRescueSession = null;
+    seekRescuePreparedSession = null;
+    seekRescuePreparedFileId = null;
     seekRescueActivation = null;
     seekRescueInternalChange = false;
 
@@ -4867,6 +5360,13 @@ async function initServiceWorker() {
       oldSession.destroy()
         .catch(() => {});
     }
+
+    if (oldPrepared && oldPrepared !== oldSession) {
+      oldPrepared.destroy()
+        .catch(() => {});
+    }
+
+    hideSeekHoldOverlay();
   }
 
   async function restoreNativeAfterRescueFailure(
@@ -4898,14 +5398,20 @@ async function initServiceWorker() {
           );
       } catch (_) {}
 
+      const finishRestore = () => {
+        seekRescueInternalChange = false;
+        hideSeekHoldOverlay();
+      };
+
+      player.addEventListener("seeked", finishRestore, { once: true });
+      player.addEventListener("canplay", finishRestore, { once: true });
+
       if (shouldPlay) {
         player.play()
           .catch(() => {});
       }
 
-      setTimeout(() => {
-        seekRescueInternalChange = false;
-      }, 350);
+      setTimeout(finishRestore, 5000);
     };
 
     if (player.readyState >= 1) {
@@ -4968,14 +5474,22 @@ async function initServiceWorker() {
         : 0;
 
     const session =
-      new MediabunnySeekRescueSession(
-        player,
-        file,
-        getMediaUrlForFile(file),
-        originalDuration
-      );
+      (
+        seekRescuePreparedSession &&
+        seekRescuePreparedFileId === file.id
+      )
+        ? seekRescuePreparedSession
+        : new MediabunnySeekRescueSession(
+            player,
+            file,
+            getMediaUrlForFile(file),
+            originalDuration
+          );
 
+    seekRescuePreparedSession = null;
+    seekRescuePreparedFileId = null;
     seekRescueSession = session;
+    showSeekHoldOverlay(targetTime);
 
     seekRescueActivation =
       (async () => {
@@ -5082,6 +5596,8 @@ async function initServiceWorker() {
             document.getElementById(
               "player"
             );
+
+          showSeekHoldOverlay(targetTime);
 
           seekRescueSession.seekTo(
             targetTime,
@@ -5196,7 +5712,7 @@ async function initServiceWorker() {
 
           if (looksStuck) {
             activateSeekRescue(
-              player.currentTime,
+              probe.targetTime,
               isSeekRescueRemembered(
                 file.id
               )
@@ -5496,6 +6012,8 @@ function authorizeDrive() {
             " 文件树"
           );
 
+          backgroundImageFiles = [];
+
           videoTreeRoot =
             await buildVideoFolderTree(
               videoRootFolder,
@@ -5553,6 +6071,7 @@ function authorizeDrive() {
 
       document.getElementById("welcome").style.display = "none";
       document.getElementById("playerWrap").style.display = "block";
+      document.body.classList.add("media-ready");
       document.getElementById("videoListBtn").style.display = (videoTreeRoot || videoPlaylist.length > 1) ? "inline-block" : "none";
 
       initVideoPlayerEventsOnce();
@@ -5564,6 +6083,8 @@ function authorizeDrive() {
         currentVideoIndex,
         true
       );
+
+      startDriveBackgroundSlideshow();
     } catch (err) {
       console.error(err);
       setStatus("读取失败");
@@ -5615,7 +6136,7 @@ document.addEventListener(
       if (
         player &&
         player.readyState >= 2 &&
-        !smoothDeviceMode &&
+        sharpenMode !== 0 &&
         !gpuActive &&
         !gpuInitializing
       ) {
@@ -5633,70 +6154,5 @@ window.addEventListener(
 </script>
 
 
-<script>
-(() => {
-  const backgrounds = ["./assets/backgrounds/bg01.jpg", "./assets/backgrounds/bg02.jpg", "./assets/backgrounds/bg03.jpg", "./assets/backgrounds/bg04.jpg", "./assets/backgrounds/bg05.jpg", "./assets/backgrounds/bg06.jpg", "./assets/backgrounds/bg07.jpg", "./assets/backgrounds/bg08.jpg", "./assets/backgrounds/bg09.jpg", "./assets/backgrounds/bg10.jpg", "./assets/backgrounds/bg11.jpg", "./assets/backgrounds/bg12.jpg", "./assets/backgrounds/bg13.jpg", "./assets/backgrounds/bg14.jpg", "./assets/backgrounds/bg15.jpg", "./assets/backgrounds/bg16.jpg", "./assets/backgrounds/bg17.jpg", "./assets/backgrounds/bg18.jpg", "./assets/backgrounds/bg19.jpg", "./assets/backgrounds/bg20.jpg", "./assets/backgrounds/bg21.jpg", "./assets/backgrounds/bg22.jpg"];
-  const intervalMs = 5000;
-  const a = document.getElementById("pageBgSlideA");
-  const b = document.getElementById("pageBgSlideB");
-
-  if (!a || !b || !backgrounds.length) return;
-
-  let index = 0;
-  let visible = a;
-  let hidden = b;
-  let timer = 0;
-  const loaded = new Set();
-
-  function preload(src) {
-    if (loaded.has(src)) return Promise.resolve();
-    return new Promise(resolve => {
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = () => { loaded.add(src); resolve(); };
-      img.onerror = () => resolve();
-      img.src = src;
-    });
-  }
-
-  function schedule() {
-    clearTimeout(timer);
-    timer = setTimeout(showNext, intervalMs);
-  }
-
-  async function showNext() {
-    if (document.hidden) {
-      schedule();
-      return;
-    }
-
-    const nextIndex = (index + 1) % backgrounds.length;
-    const src = backgrounds[nextIndex];
-    await preload(src);
-
-    hidden.style.backgroundImage = `url("${src}")`;
-    hidden.classList.add("is-visible");
-    visible.classList.remove("is-visible");
-
-    const old = visible;
-    visible = hidden;
-    hidden = old;
-    index = nextIndex;
-
-    const afterNext = backgrounds[(index + 1) % backgrounds.length];
-    setTimeout(() => preload(afterNext), 900);
-    schedule();
-  }
-
-  a.style.backgroundImage = `url("${backgrounds[0]}")`;
-  loaded.add(backgrounds[0]);
-  preload(backgrounds[1 % backgrounds.length]);
-  schedule();
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) schedule();
-  });
-})();
-</script>
 </body>
 </html>

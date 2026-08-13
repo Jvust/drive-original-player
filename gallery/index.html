@@ -529,6 +529,12 @@ let currentAccessToken = null;
 let driveIds = [];
 let resourceKeys = {};
 let galleryFiles = [];
+let galleryBgQueue = [];
+let galleryBgTimer = null;
+let galleryBgVisibleLayer = null;
+let galleryBgHiddenLayer = null;
+let galleryBgVisibleObjectUrl = null;
+let galleryBgPending = false;
 let galleryTreeRoot = null;
 let galleryRootFolder = null;
 const expandedGalleryFolders = new Set();
@@ -1131,6 +1137,87 @@ function originalUrl(file, retryValue = null) {
   if (retryValue !== null) params.set("retry", String(retryValue));
   const query = params.toString();
   return "./media/" + encodeURIComponent(file.id) + (query ? "?" + query : "");
+}
+
+
+function shuffleGalleryBackgrounds(files) {
+  const copy = files.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function scheduleGalleryBackgroundNext(delay = 5000) {
+  clearTimeout(galleryBgTimer);
+  galleryBgTimer = setTimeout(showNextGalleryBackground, delay);
+}
+
+async function showNextGalleryBackground() {
+  if (galleryBgPending || !galleryFiles.length || document.hidden) {
+    scheduleGalleryBackgroundNext(1000);
+    return;
+  }
+
+  galleryBgPending = true;
+
+  try {
+    if (!galleryBgQueue.length) {
+      galleryBgQueue = shuffleGalleryBackgrounds(galleryFiles);
+    }
+
+    const file = galleryBgQueue.shift();
+    const response = await fetch(originalUrl(file), { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error("HTTP " + response.status);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+
+    galleryBgHiddenLayer.style.backgroundImage = `url("${objectUrl}")`;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    galleryBgHiddenLayer.classList.add("is-visible");
+    galleryBgVisibleLayer.classList.remove("is-visible");
+
+    const oldLayer = galleryBgVisibleLayer;
+    galleryBgVisibleLayer = galleryBgHiddenLayer;
+    galleryBgHiddenLayer = oldLayer;
+
+    const oldUrl = galleryBgVisibleObjectUrl;
+    galleryBgVisibleObjectUrl = objectUrl;
+
+    if (oldUrl) {
+      setTimeout(() => {
+        try { URL.revokeObjectURL(oldUrl); } catch (_) {}
+      }, 900);
+    }
+
+    scheduleGalleryBackgroundNext(5000);
+  } catch (error) {
+    console.debug("Gallery 背景轮播失败：", error);
+    scheduleGalleryBackgroundNext(1600);
+  } finally {
+    galleryBgPending = false;
+  }
+}
+
+function startGalleryBackgroundSlideshow() {
+  const a = document.getElementById("pageBgSlideA");
+  const b = document.getElementById("pageBgSlideB");
+  if (!a || !b || !galleryFiles.length) return;
+
+  galleryBgVisibleLayer = a;
+  galleryBgHiddenLayer = b;
+  galleryBgQueue = [];
+  a.style.backgroundImage = "none";
+  b.style.backgroundImage = "none";
+  a.classList.add("is-visible");
+  b.classList.remove("is-visible");
+  showNextGalleryBackground();
 }
 
 function renderGallery() {
@@ -2395,6 +2482,7 @@ window.addEventListener("load", async () => {
     }
 
     renderGallery();
+    startGalleryBackgroundSlideshow();
 
     requestAnimationFrame(() => {
       const activeCard =
@@ -2430,70 +2518,5 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 window.addEventListener("focus", refreshWorkerAccessToken);
 </script>
 
-<script>
-(() => {
-  const backgrounds = ["../assets/backgrounds/bg01.jpg", "../assets/backgrounds/bg02.jpg", "../assets/backgrounds/bg03.jpg", "../assets/backgrounds/bg04.jpg", "../assets/backgrounds/bg05.jpg", "../assets/backgrounds/bg06.jpg", "../assets/backgrounds/bg07.jpg", "../assets/backgrounds/bg08.jpg", "../assets/backgrounds/bg09.jpg", "../assets/backgrounds/bg10.jpg", "../assets/backgrounds/bg11.jpg", "../assets/backgrounds/bg12.jpg", "../assets/backgrounds/bg13.jpg", "../assets/backgrounds/bg14.jpg", "../assets/backgrounds/bg15.jpg", "../assets/backgrounds/bg16.jpg", "../assets/backgrounds/bg17.jpg", "../assets/backgrounds/bg18.jpg", "../assets/backgrounds/bg19.jpg", "../assets/backgrounds/bg20.jpg", "../assets/backgrounds/bg21.jpg", "../assets/backgrounds/bg22.jpg"];
-  const intervalMs = 5000;
-  const a = document.getElementById("pageBgSlideA");
-  const b = document.getElementById("pageBgSlideB");
-
-  if (!a || !b || !backgrounds.length) return;
-
-  let index = 0;
-  let visible = a;
-  let hidden = b;
-  let timer = 0;
-  const loaded = new Set();
-
-  function preload(src) {
-    if (loaded.has(src)) return Promise.resolve();
-    return new Promise(resolve => {
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = () => { loaded.add(src); resolve(); };
-      img.onerror = () => resolve();
-      img.src = src;
-    });
-  }
-
-  function schedule() {
-    clearTimeout(timer);
-    timer = setTimeout(showNext, intervalMs);
-  }
-
-  async function showNext() {
-    if (document.hidden) {
-      schedule();
-      return;
-    }
-
-    const nextIndex = (index + 1) % backgrounds.length;
-    const src = backgrounds[nextIndex];
-    await preload(src);
-
-    hidden.style.backgroundImage = `url("${src}")`;
-    hidden.classList.add("is-visible");
-    visible.classList.remove("is-visible");
-
-    const old = visible;
-    visible = hidden;
-    hidden = old;
-    index = nextIndex;
-
-    const afterNext = backgrounds[(index + 1) % backgrounds.length];
-    setTimeout(() => preload(afterNext), 900);
-    schedule();
-  }
-
-  a.style.backgroundImage = `url("${backgrounds[0]}")`;
-  loaded.add(backgrounds[0]);
-  preload(backgrounds[1 % backgrounds.length]);
-  schedule();
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) schedule();
-  });
-})();
-</script>
 </body>
 </html>
