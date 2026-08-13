@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Drive Original Gallery</title>
+  <meta name="theme-color" content="#08090b" />
+  <meta name="color-scheme" content="dark" />
+  <title>Drive Original Gallery · Quality First</title>
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; background: #0b0b0b; color: #fff; font-family: Arial, Helvetica, sans-serif; }
@@ -231,10 +233,191 @@
       .nav-btn { width: 40px; height: 52px; opacity: .72; }
       #prevBtn { left: 6px; } #nextBtn { right: 6px; }
     }
+
+
+    /* ============================================================
+     * Quality First Gallery UI
+     * ============================================================ */
+    :root {
+      --g-bg: #08090b;
+      --g-surface: #111318;
+      --g-line: rgba(255,255,255,.085);
+      --g-text: #f4f5f7;
+      --g-muted: #9ba2ac;
+      --g-dim: #737b86;
+      color-scheme: dark;
+    }
+
+    html, body {
+      background:
+        radial-gradient(900px 420px at 50% -230px, rgba(255,255,255,.05), transparent 74%),
+        var(--g-bg);
+      color: var(--g-text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    header {
+      height: 54px;
+      padding: 0 clamp(12px, 2vw, 26px);
+      background: rgba(8,9,11,.80);
+      border-bottom: 1px solid var(--g-line);
+      backdrop-filter: blur(18px) saturate(125%);
+      -webkit-backdrop-filter: blur(18px) saturate(125%);
+    }
+    .brand { display: flex; align-items: center; gap: 9px; color: #f4f5f7; font-size: 14px; font-weight: 680; }
+    .brand > span:last-child { display: flex; align-items: baseline; gap: 7px; }
+    .brand small { color: var(--g-dim); font-size: 9px; letter-spacing: .13em; }
+    .brand-mark {
+      display: grid; place-items: center; width: 26px; height: 26px;
+      border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
+      background: linear-gradient(145deg,#23272e,#111318); font-size: 12px; font-weight: 800;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 6px 22px rgba(0,0,0,.24);
+    }
+    #status { max-width: 48vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--g-muted); font-size: 12px; }
+    main { max-width: 1720px; padding: clamp(12px, 2vw, 24px); }
+    .gallery-head { margin: 2px 0 18px; padding: 0 2px; }
+    .gallery-head h1 { font-size: clamp(18px, 2vw, 24px); letter-spacing: -.025em; }
+    #count { color: var(--g-muted); }
+
+    button {
+      min-height: 38px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px;
+      background: #f0f1f3;
+      color: #101114;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 620;
+      transition: background .16s ease, border-color .16s ease, transform .16s ease, opacity .16s ease;
+    }
+    button:hover { background: #fff; }
+    button:active { transform: translateY(1px); }
+    button:focus-visible { outline: 2px solid rgba(255,255,255,.82); outline-offset: 2px; }
+
+    .gallery-tree-folder { margin: 4px 0; }
+    .gallery-folder-row {
+      min-height: 42px;
+      border: 1px solid transparent;
+      color: #d9dde2;
+    }
+    .gallery-folder-row:hover {
+      border-color: var(--g-line);
+      background: rgba(255,255,255,.045);
+    }
+    .gallery-folder-icon {
+      position: relative;
+      width: 15px;
+      height: 11px;
+      margin: 1px 1px 0 0;
+      border: 1px solid rgba(220,224,230,.55);
+      border-radius: 3px;
+      background: rgba(255,255,255,.035);
+      font-size: 0;
+    }
+    .gallery-folder-icon::before {
+      content: "";
+      position: absolute;
+      left: 1px;
+      top: -4px;
+      width: 7px;
+      height: 4px;
+      border: 1px solid rgba(220,224,230,.55);
+      border-bottom: 0;
+      border-radius: 3px 3px 0 0;
+      background: #111318;
+    }
+    .gallery-folder-children { border-left-color: rgba(255,255,255,.075); }
+    .gallery-folder-count { color: #7e8691; }
+
+    .gallery-folder-images {
+      grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+      gap: 9px;
+      padding: 7px 0 14px;
+    }
+    .card {
+      border: 1px solid rgba(255,255,255,.075);
+      border-radius: 12px;
+      background: #121419;
+      box-shadow: 0 10px 30px rgba(0,0,0,.12);
+      transform: translateZ(0);
+      transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }
+    .card:hover {
+      border-color: rgba(255,255,255,.16);
+      transform: translateY(-1px);
+      box-shadow: 0 16px 34px rgba(0,0,0,.20);
+    }
+    .card img { transition: transform .22s ease, opacity .18s ease; }
+    .card:hover img { transform: scale(1.018); }
+    .card .label {
+      padding: 26px 9px 8px;
+      background: linear-gradient(transparent, rgba(0,0,0,.78));
+      color: #e9ebee;
+    }
+
+    #viewer { background: #000; }
+    .viewer-top, .nav-btn {
+      transition: opacity .18s ease, visibility .18s ease, transform .18s ease;
+    }
+    .viewer-top {
+      min-height: 62px;
+      padding-left: 14px;
+      padding-right: 14px;
+      background: linear-gradient(rgba(0,0,0,.72), rgba(0,0,0,.12) 68%, transparent);
+    }
+    .icon-btn, .nav-btn {
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(16,18,22,.68);
+      color: #fff;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 10px 28px rgba(0,0,0,.26);
+    }
+    .icon-btn:hover, .nav-btn:hover { background: rgba(35,38,44,.82); }
+    #viewerName { font-size: 12px; font-weight: 580; }
+    #viewerCounter { color: #9da3ac; font-size: 11px; }
+
+    /* 正常看图时控制层自动隐藏，不盖住原图。 */
+    #viewer.viewer-ui-hidden .viewer-top,
+    #viewer.viewer-ui-hidden .nav-btn {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #viewer.viewer-ui-hidden { cursor: none; }
+
+    #viewerPlaceholder { filter: blur(12px); opacity: .54; }
+    #viewerLoading {
+      padding: 7px 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 999px;
+      background: rgba(15,17,20,.70);
+      color: #b7bcc4;
+      backdrop-filter: blur(10px);
+    }
+
+    @media (max-width: 700px) {
+      header { height: 50px; padding: 0 10px; }
+      .brand small { display: none; }
+      main { padding: 8px; }
+      .gallery-head { margin: 6px 2px 12px; }
+      .gallery-folder-images { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+      .card { border-radius: 7px; box-shadow: none; }
+      .viewer-top { min-height: 58px; padding-left: 8px; padding-right: 8px; }
+      .icon-btn { width: 42px; height: 42px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+      }
+    }
+
   </style>
 </head>
 <body>
-  <header><div class="brand">Drive Original Gallery</div><div id="status">准备中</div></header>
+  <header><div class="brand"><span class="brand-mark">D</span><span>Drive Original Gallery<small>ORIGINAL</small></span></div><div id="status">准备中</div></header>
   <main>
     <section id="welcome">
       <h1>Drive Original Gallery</h1>
@@ -962,7 +1145,7 @@ function renderGallery() {
       icon.className =
         "gallery-folder-icon";
 
-      icon.textContent = "📁";
+      icon.textContent = "";
 
       const name =
         document.createElement("span");
@@ -1611,9 +1794,20 @@ async function showViewerImage(index) {
     : originalUrl(file);
 }
 
-function openViewer(index) { const viewer = document.getElementById("viewer"); viewer.classList.add("open"); viewer.setAttribute("aria-hidden","false"); document.body.style.overflow = "hidden"; showViewerImage(index); }
+function openViewer(index) {
+  const viewer = document.getElementById("viewer");
+  viewer.classList.add("open");
+  viewer.classList.remove("viewer-ui-hidden");
+  viewer.setAttribute("aria-hidden","false");
+  document.body.style.overflow = "hidden";
+  showViewerUi();
+  showViewerImage(index);
+}
 function closeViewer() {
   const viewer = document.getElementById("viewer");
+  clearTimeout(viewerUiTimer);
+  viewerUiTimer = null;
+  viewer.classList.remove("viewer-ui-hidden");
   viewer.classList.remove("open");
   viewer.setAttribute("aria-hidden", "true");
   document.body.style.overflow = "";
@@ -1648,6 +1842,23 @@ function touchCenter(touches) {
     x: (touches[0].clientX + touches[1].clientX) / 2,
     y: (touches[0].clientY + touches[1].clientY) / 2
   };
+}
+
+let viewerUiTimer = null;
+const VIEWER_UI_HIDE_DELAY = 2300;
+
+function showViewerUi() {
+  const el = document.getElementById("viewer");
+  if (!el || !el.classList.contains("open")) return;
+
+  el.classList.remove("viewer-ui-hidden");
+  clearTimeout(viewerUiTimer);
+
+  viewerUiTimer = setTimeout(() => {
+    if (el.classList.contains("open")) {
+      el.classList.add("viewer-ui-hidden");
+    }
+  }, VIEWER_UI_HIDE_DELAY);
 }
 
 const viewer = document.getElementById("viewer");
@@ -1959,9 +2170,15 @@ window.addEventListener("resize", () => {
   }
 });
 
+viewer.addEventListener("pointermove", showViewerUi, { passive: true });
+viewer.addEventListener("pointerdown", showViewerUi, { passive: true });
+viewer.addEventListener("touchstart", showViewerUi, { passive: true });
+viewer.addEventListener("wheel", showViewerUi, { passive: true });
+
 document.addEventListener("keydown", event => {
   if (!document.getElementById("viewer").classList.contains("open")) return;
 
+  showViewerUi();
   const center = getImageStageCenter();
 
   if (event.key === "Escape") {
