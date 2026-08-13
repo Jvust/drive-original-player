@@ -28,16 +28,20 @@
      * 另一个 <video id="preloadPlayer"> 在后台提前拿到 canplay。
      */
     .video-hot-standby {
-      position: absolute !important;
-      left: 0 !important;
-      top: 0 !important;
-      width: 2px !important;
-      height: 2px !important;
-      max-height: 2px !important;
-      opacity: 0 !important;
-      visibility: hidden !important;
+      /*
+       * 不用 visibility:hidden：部分 Chromium 会因此降低隐藏视频解码优先级。
+       * 改为真正放到屏幕外，但保持“可渲染”状态，让静音预滚能启动解码器。
+       */
+      position: fixed !important;
+      left: -10000px !important;
+      top: -10000px !important;
+      width: 4px !important;
+      height: 4px !important;
+      max-height: 4px !important;
+      opacity: 0.001 !important;
+      visibility: visible !important;
       pointer-events: none !important;
-      z-index: -1 !important;
+      z-index: -9999 !important;
     }
 
     #videoStage {
@@ -875,6 +879,15 @@
         playsinline
         muted
         preload="auto"
+        controlsList="nodownload nofullscreen noremoteplayback"
+        aria-hidden="true">
+      </video>
+      <video
+        id="seekPreloadPlayer"
+        class="video-hot-standby"
+        playsinline
+        muted
+        preload="metadata"
         controlsList="nodownload nofullscreen noremoteplayback"
         aria-hidden="true">
       </video>
@@ -2091,93 +2104,273 @@ function syncGpuMediaControls() {
 }
 
 function initGpuMediaControls() {
-  const player = document.getElementById("player");
-  const seek = document.getElementById("gpuSeek");
-  const volume = document.getElementById("gpuVolume");
-
-  if (!player || player.dataset.gpuControlsReady === "1") {
-    return;
-  }
-
-  player.dataset.gpuControlsReady = "1";
-
-  [
-    "play",
-    "pause",
-    "timeupdate",
-    "durationchange",
-    "volumechange",
-    "loadedmetadata"
-  ].forEach(eventName => {
-    player.addEventListener(
-      eventName,
-      syncGpuMediaControls
+  const player =
+    document.getElementById(
+      "player"
     );
-  });
 
-  player.addEventListener("seeked", () => {
-    renderGpuFrame();
-    syncGpuMediaControls();
-  });
+  const seek =
+    document.getElementById(
+      "gpuSeek"
+    );
 
-  player.addEventListener("loadeddata", () => {
-    renderGpuFrame();
-    prepareSeekRescueForCurrentFile();
-  });
+  const volume =
+    document.getElementById(
+      "gpuVolume"
+    );
 
-  if (seek) {
-    seek.addEventListener("pointerdown", () => {
-      gpuSeeking = true;
+  /*
+   * 视频元素事件：每个 video 槽位只绑定一次。
+   * 事件触发时必须再次确认它仍是当前 active player，
+   * 防止已经退到后台的旧 video 更新 UI / 触发 Seek Rescue。
+   */
+  if (
+    player &&
+    player.dataset.gpuControlsReady !== "1"
+  ) {
+    player.dataset.gpuControlsReady = "1";
+
+    const isActive = () =>
+      player ===
+      document.getElementById(
+        "player"
+      );
+
+    [
+      "play",
+      "pause",
+      "timeupdate",
+      "durationchange",
+      "volumechange",
+      "loadedmetadata"
+    ].forEach(eventName => {
+      player.addEventListener(
+        eventName,
+        () => {
+          if (isActive()) {
+            syncGpuMediaControls();
+          }
+        }
+      );
     });
 
-    seek.addEventListener("input", () => {
-      if (
-        Number.isFinite(player.duration) &&
-        player.duration > 0
-      ) {
-        const next =
-          (Number(seek.value) / 1000) *
-          player.duration;
+    player.addEventListener(
+      "seeked",
+      () => {
+        if (!isActive()) return;
+        renderGpuFrame();
+        syncGpuMediaControls();
+        hideSeekHoldOverlay();
+      }
+    );
 
-        const time = document.getElementById("gpuTime");
-        if (time) {
+    player.addEventListener(
+      "loadeddata",
+      () => {
+        if (!isActive()) return;
+
+        renderGpuFrame();
+
+        /*
+         * 已知异常文件继续预热原 Rescue；
+         * 所有 MP4 则额外预热“隐藏 Instant Seek 引擎”。
+         * 这样不会为同一普通文件创建两个 active-bound Rescue。
+         */
+        prepareSeekRescueForCurrentFile()
+          .catch(() => {});
+
+        setTimeout(() => {
+          if (isActive()) {
+            primeInstantSeekEngine()
+              .catch(() => {});
+          }
+        }, 900);
+      }
+    );
+  }
+
+  /*
+   * 关键修复：进度条 DOM 只能绑定一次。
+   * V5 每次热切都会重新给同一个 #gpuSeek 添加一组监听器，
+   * 切过几个视频以后，一次拖动会同时让多个旧 video seek。
+   */
+  if (
+    seek &&
+    seek.dataset.instantSeekBound !== "1"
+  ) {
+    seek.dataset.instantSeekBound = "1";
+
+    let lastCommitAt = 0;
+    let lastCommitTarget = NaN;
+
+    const getTarget = () => {
+      const active =
+        document.getElementById(
+          "player"
+        );
+
+      if (
+        !active ||
+        !Number.isFinite(active.duration) ||
+        active.duration <= 0
+      ) {
+        return null;
+      }
+
+      return (
+        Number(seek.value) /
+        1000
+      ) * active.duration;
+    };
+
+    seek.addEventListener(
+      "pointerdown",
+      () => {
+        gpuSeeking = true;
+
+        loadMediabunnyModule()
+          .catch(() => {});
+
+        /*
+         * 用户一按住进度条就开始读取 MP4 索引，
+         * 把初始化时间藏在拖动动作里。
+         */
+        primeInstantSeekEngine()
+          .catch(() => {});
+      },
+      { passive: true }
+    );
+
+    seek.addEventListener(
+      "input",
+      () => {
+        const next =
+          getTarget();
+
+        if (!Number.isFinite(next)) {
+          return;
+        }
+
+        seekPendingTarget = next;
+
+        const time =
+          document.getElementById(
+            "gpuTime"
+          );
+
+        const active =
+          document.getElementById(
+            "player"
+          );
+
+        if (time && active) {
           time.textContent =
             formatSeconds(next) +
             " / " +
-            formatSeconds(player.duration);
+            formatSeconds(
+              active.duration
+            );
         }
+
+        /*
+         * 手停在某个位置约 160ms 后，
+         * 后台隐藏播放器就提前准备这个目标。
+         */
+        scheduleInstantSeekTarget(
+          next,
+          160
+        );
       }
-    });
+    );
 
     const commitSeek = () => {
-      if (
-        Number.isFinite(player.duration) &&
-        player.duration > 0
-      ) {
-        player.currentTime =
-          (Number(seek.value) / 1000) *
-          player.duration;
-      }
+      const next =
+        getTarget();
+
       gpuSeeking = false;
+
+      if (!Number.isFinite(next)) {
+        return;
+      }
+
+      const now =
+        performance.now();
+
+      /*
+       * pointerup 后通常还会再触发 change；
+       * 去重，避免同一个目标被提交两次。
+       */
+      if (
+        Number.isFinite(lastCommitTarget) &&
+        Math.abs(
+          lastCommitTarget - next
+        ) < 0.05 &&
+        now - lastCommitAt < 350
+      ) {
+        return;
+      }
+
+      lastCommitTarget = next;
+      lastCommitAt = now;
+
+      commitInstantSeek(
+        next
+      ).catch(error => {
+        console.debug(
+          "Instant Seek 提交失败：",
+          error
+        );
+      });
     };
 
-    seek.addEventListener("pointerdown", () => {
-      loadMediabunnyModule().catch(() => {});
-    }, { passive: true });
+    seek.addEventListener(
+      "pointerup",
+      commitSeek
+    );
 
-    seek.addEventListener("change", commitSeek);
-    seek.addEventListener("pointerup", commitSeek);
+    seek.addEventListener(
+      "change",
+      commitSeek
+    );
+
+    seek.addEventListener(
+      "pointercancel",
+      () => {
+        gpuSeeking = false;
+      }
+    );
   }
 
-  if (volume) {
-    volume.addEventListener("input", () => {
-      player.volume = Number(volume.value);
-      if (player.volume > 0) player.muted = false;
-    });
+  /* 音量控制同样只绑定一次，并始终操作当前 active player。 */
+  if (
+    volume &&
+    volume.dataset.gpuVolumeBound !== "1"
+  ) {
+    volume.dataset.gpuVolumeBound = "1";
+
+    volume.addEventListener(
+      "input",
+      () => {
+        const active =
+          document.getElementById(
+            "player"
+          );
+
+        if (!active) return;
+
+        active.volume =
+          Number(volume.value);
+
+        if (active.volume > 0) {
+          active.muted = false;
+        }
+      }
+    );
   }
 
   syncGpuMediaControls();
 }
+
 
 
 let fullscreenUiTimer = null;
@@ -2510,10 +2703,24 @@ function buildDiagnosticText() {
       (gpuActive ? gpuColorSpace : "由浏览器原生视频决定"),
     "Seek Rescue：     " +
       getSeekRescueDiagnosticText(),
+    "Instant Seek：    " +
+      (
+        instantSeekReady
+          ? "目标已预缓冲 · 可瞬切"
+          : (
+              instantSeekPromise
+                ? "正在准备目标关键帧"
+                : (
+                    instantSeekSession
+                      ? "索引已预热"
+                      : "待命"
+                  )
+            )
+      ),
     "视频热备：        " +
       (
         hotStandbyReady
-          ? "下一条已 canplay · 可热切"
+          ? "下一条首帧已解码 · 可热切"
           : (
               hotStandbyLoading
                 ? "正在预加载下一条"
@@ -3426,6 +3633,103 @@ async function initServiceWorker() {
       );
   }
 
+  async function forceDecodeStandbyFirstFrame(
+    video,
+    timeout = 2200
+  ) {
+    if (!video) {
+      return false;
+    }
+
+    /*
+     * canplay 并不保证隐藏 video 已真正启动解码器。
+     * 这里让它静音短暂播放，直到 requestVideoFrameCallback
+     * 确认“第一帧已经解码出来”，再暂停并回到 0 秒。
+     */
+    const previousMuted = video.muted;
+    const previousVolume = video.volume;
+
+    video.muted = true;
+    video.volume = 0;
+
+    try {
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        return false;
+      }
+
+      const gotFrame = await new Promise(resolve => {
+        let settled = false;
+        let frameHandle = null;
+
+        const finish = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+
+          if (
+            frameHandle !== null &&
+            typeof video.cancelVideoFrameCallback === "function"
+          ) {
+            try {
+              video.cancelVideoFrameCallback(frameHandle);
+            } catch (_) {}
+          }
+
+          video.removeEventListener("timeupdate", onTimeUpdate);
+          video.removeEventListener("playing", onPlaying);
+          resolve(value);
+        };
+
+        const onTimeUpdate = () => {
+          if (video.currentTime > 0.001) {
+            finish(true);
+          }
+        };
+
+        const onPlaying = () => {
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            setTimeout(() => finish(true), 80);
+          }
+        };
+
+        video.addEventListener("timeupdate", onTimeUpdate);
+        video.addEventListener("playing", onPlaying, { once: true });
+
+        if (typeof video.requestVideoFrameCallback === "function") {
+          frameHandle = video.requestVideoFrameCallback(() => finish(true));
+        }
+
+        const timer = setTimeout(() => {
+          finish(video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+        }, timeout);
+
+        try {
+          const promise = video.play();
+          promise?.catch?.(() => {
+            /*
+             * 静音播放通常允许自动播放；若浏览器仍阻止，
+             * 退回 readyState 判断，不让热备逻辑永久卡住。
+             */
+          });
+        } catch (_) {}
+      });
+
+      try {
+        video.pause();
+      } catch (_) {}
+
+      /*
+       * 不再把热备视频 seek 回绝对 0 秒。
+       * 第一帧通常只推进几十毫秒；保留这个已解码状态，
+       * 比为了 0.00 秒再触发一次 seek 更利于真正秒切。
+       */
+      return gotFrame;
+    } finally {
+      video.muted = previousMuted;
+      video.volume = previousVolume;
+    }
+  }
+
   async function prepareHotStandby(
     index =
       currentVideoIndex + 1
@@ -3680,8 +3984,17 @@ async function initServiceWorker() {
         return false;
       }
 
+      let decoderPrimed = false;
+
+      if (ready) {
+        decoderPrimed =
+          await forceDecodeStandbyFirstFrame(
+            standby
+          );
+      }
+
       hotStandbyReady =
-        !!ready;
+        !!(ready && decoderPrimed);
 
       hotStandbyLoading =
         false;
@@ -3852,6 +4165,10 @@ async function initServiceWorker() {
     setGpuUiActive(
       gpuWasActive
     );
+
+    disposeInstantSeekSession(
+      true
+    ).catch(() => {});
 
     currentVideoIndex =
       index;
@@ -4961,6 +5278,10 @@ async function initServiceWorker() {
      */
     destroySeekRescue();
 
+    disposeInstantSeekSession(
+      true
+    ).catch(() => {});
+
     /*
      * 如果用户点的不是当前热备目标，
      * 旧热备立即失效，避免后台继续下载无关视频。
@@ -5349,12 +5670,12 @@ async function initServiceWorker() {
    * 正常文件继续原生 <video>；仅 Seek 卡住时加载本模块。
    */
 
-  const SEEK_RESCUE_TIMEOUT_MS = 1200;
-  const SEEK_RESCUE_DEBOUNCE_MS = 150;
-  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 10;
-  const SEEK_RESCUE_REFILL_OUTPUT_SEC = 16;
-  const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 5;
-  const SEEK_RESCUE_WINDOW_BACK_SEC = 6;
+  const SEEK_RESCUE_TIMEOUT_MS = 500;
+  const SEEK_RESCUE_DEBOUNCE_MS = 90;
+  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 2.5;
+  const SEEK_RESCUE_REFILL_OUTPUT_SEC = 12;
+  const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 4;
+  const SEEK_RESCUE_WINDOW_BACK_SEC = 5;
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
 
@@ -5371,6 +5692,19 @@ async function initServiceWorker() {
   let seekPendingTarget = null;
   let seekRescuePreparedSession = null;
   let seekRescuePreparedFileId = null;
+
+  /*
+   * Instant Seek：拖动进度条时在隐藏 video 里提前建立目标 MSE。
+   * 松手时如果已经准备好，就直接把隐藏播放器顶到前台。
+   */
+  let instantSeekSession = null;
+  let instantSeekFileId = null;
+  let instantSeekTarget = null;
+  let instantSeekPromise = null;
+  let instantSeekGeneration = 0;
+  let instantSeekDebounceTimer = null;
+  let instantSeekReady = false;
+  let instantSeekQueuedTarget = null;
 
 
   function showSeekHoldOverlay(targetTime) {
@@ -5423,14 +5757,601 @@ async function initServiceWorker() {
     syncGpuMediaControls();
   }
 
-  async function prepareSeekRescueForCurrentFile() {
+  function isMp4VideoFile(file) {
+    return !!(
+      file &&
+      (
+        file.mimeType === "video/mp4" ||
+        /\.mp4$/i.test(file.name || "")
+      )
+    );
+  }
+
+  async function disposeInstantSeekSession(
+    clearHiddenMedia = true
+  ) {
+    if (instantSeekDebounceTimer) {
+      clearTimeout(instantSeekDebounceTimer);
+      instantSeekDebounceTimer = null;
+    }
+
+    instantSeekGeneration += 1;
+
+    const session = instantSeekSession;
+
+    instantSeekSession = null;
+    instantSeekFileId = null;
+    instantSeekTarget = null;
+    instantSeekPromise = null;
+    instantSeekReady = false;
+    instantSeekQueuedTarget = null;
+
+    if (
+      session &&
+      session !== seekRescueSession
+    ) {
+      try {
+        await session.destroy();
+      } catch (_) {}
+    }
+
+    if (clearHiddenMedia) {
+      const hidden =
+        document.getElementById(
+          "seekPreloadPlayer"
+        );
+
+      if (hidden) {
+        try {
+          hidden.pause();
+          hidden.removeAttribute("src");
+          hidden.load();
+        } catch (_) {}
+      }
+    }
+  }
+
+  async function primeInstantSeekEngine() {
+    const file =
+      videoPlaylist[
+        currentVideoIndex
+      ];
+
+    const active =
+      document.getElementById(
+        "player"
+      );
+
+    const hidden =
+      document.getElementById(
+        "seekPreloadPlayer"
+      );
+
+    if (
+      !file ||
+      !active ||
+      !hidden ||
+      !isMp4VideoFile(file)
+    ) {
+      return null;
+    }
+
+    if (
+      instantSeekSession &&
+      instantSeekFileId === file.id &&
+      instantSeekSession.player === hidden
+    ) {
+      try {
+        await instantSeekSession.prepareInput();
+        return instantSeekSession;
+      } catch (_) {
+        await disposeInstantSeekSession(true);
+      }
+    }
+
+    await disposeInstantSeekSession(true);
+
+    const session =
+      new MediabunnySeekRescueSession(
+        hidden,
+        file,
+        getMediaUrlForFile(file),
+        Number.isFinite(active.duration)
+          ? active.duration
+          : 0
+      );
+
+    instantSeekSession = session;
+    instantSeekFileId = file.id;
+    instantSeekReady = false;
+
+    try {
+      await session.prepareInput();
+      return session;
+    } catch (error) {
+      console.debug(
+        "Instant Seek 索引预热失败：",
+        error
+      );
+
+      if (
+        instantSeekSession === session
+      ) {
+        await disposeInstantSeekSession(true);
+      }
+
+      return null;
+    }
+  }
+
+  async function prepareInstantSeekTarget(
+    targetTime
+  ) {
+    const file =
+      videoPlaylist[
+        currentVideoIndex
+      ];
+
+    if (!isMp4VideoFile(file)) {
+      return false;
+    }
+
+    instantSeekQueuedTarget =
+      targetTime;
+
+    instantSeekTarget =
+      targetTime;
+
+    instantSeekReady = false;
+
+    /*
+     * 只允许一个 MSE 构建任务运行。
+     * 拖动过程中如果又来了新位置，不排一长串任务，
+     * 只保留“最后一个目标”。当前任务结束后立刻跳到最新目标。
+     */
+    if (instantSeekPromise) {
+      return instantSeekPromise;
+    }
+
+    const work = (async () => {
+      while (
+        instantSeekQueuedTarget !== null
+      ) {
+        const requestedTarget =
+          instantSeekQueuedTarget;
+
+        instantSeekQueuedTarget = null;
+
+        const currentFile =
+          videoPlaylist[
+            currentVideoIndex
+          ];
+
+        if (
+          !currentFile ||
+          currentFile.id !== file.id
+        ) {
+          return false;
+        }
+
+        const session =
+          await primeInstantSeekEngine();
+
+        if (
+          !session ||
+          instantSeekFileId !== file.id
+        ) {
+          return false;
+        }
+
+        const generation =
+          ++instantSeekGeneration;
+
+        try {
+          await session.seekTo(
+            requestedTarget,
+            false,
+            true
+          );
+        } catch (error) {
+          console.debug(
+            "Instant Seek 目标预缓冲失败：",
+            error
+          );
+
+          if (
+            instantSeekQueuedTarget === null
+          ) {
+            instantSeekReady = false;
+            return false;
+          }
+
+          continue;
+        }
+
+        if (
+          generation !== instantSeekGeneration ||
+          instantSeekSession !== session ||
+          instantSeekFileId !== file.id
+        ) {
+          return false;
+        }
+
+        /*
+         * 构建期间用户又拖到了别处：
+         * 当前结果直接丢弃，循环只处理最新位置。
+         */
+        if (
+          instantSeekQueuedTarget !== null
+        ) {
+          instantSeekReady = false;
+          continue;
+        }
+
+        instantSeekTarget =
+          requestedTarget;
+
+        instantSeekReady = true;
+        return true;
+      }
+
+      return instantSeekReady;
+    })();
+
+    instantSeekPromise = work;
+
+    try {
+      return await work;
+    } finally {
+      if (instantSeekPromise === work) {
+        instantSeekPromise = null;
+      }
+    }
+  }
+
+  function scheduleInstantSeekTarget(
+    targetTime,
+    delay = 180
+  ) {
+    if (instantSeekDebounceTimer) {
+      clearTimeout(
+        instantSeekDebounceTimer
+      );
+    }
+
+    instantSeekTarget =
+      targetTime;
+
+    instantSeekReady =
+      false;
+
+    instantSeekDebounceTimer =
+      setTimeout(() => {
+        instantSeekDebounceTimer = null;
+
+        prepareInstantSeekTarget(
+          targetTime
+        ).catch(() => {});
+      }, delay);
+  }
+
+  async function promoteInstantSeekSession(
+    targetTime,
+    shouldPlay
+  ) {
+    const file =
+      videoPlaylist[
+        currentVideoIndex
+      ];
+
+    const oldPlayer =
+      document.getElementById(
+        "player"
+      );
+
+    const hidden =
+      document.getElementById(
+        "seekPreloadPlayer"
+      );
+
+    const session =
+      instantSeekSession;
+
+    if (
+      !file ||
+      !oldPlayer ||
+      !hidden ||
+      !session ||
+      !instantSeekReady ||
+      instantSeekFileId !== file.id ||
+      session.player !== hidden ||
+      !Number.isFinite(instantSeekTarget) ||
+      Math.abs(
+        instantSeekTarget - targetTime
+      ) > 0.8 ||
+      hidden.readyState <
+        HTMLMediaElement.HAVE_CURRENT_DATA
+    ) {
+      return false;
+    }
+
+    const gpuWasActive =
+      gpuActive;
+
+    if (gpuWasActive) {
+      cancelGpuFrames();
+    }
+
+    const volume =
+      oldPlayer.volume;
+
+    const muted =
+      oldPlayer.muted;
+
+    const rate =
+      oldPlayer.playbackRate;
+
+    try {
+      oldPlayer.pause();
+    } catch (_) {}
+
+    /*
+     * 当前 Rescue / Prepared Rescue 属于旧 active video，
+     * 先销毁；刚准备好的 instantSeekSession 要保留。
+     */
+    const oldRescue =
+      seekRescueSession;
+
+    const oldPrepared =
+      seekRescuePreparedSession;
+
+    seekRescueSession = null;
+    seekRescuePreparedSession = null;
+    seekRescuePreparedFileId = null;
+    seekRescueActivation = null;
+    clearSeekRescueWatchdog();
+
+    if (
+      oldRescue &&
+      oldRescue !== session
+    ) {
+      oldRescue.destroy().catch(() => {});
+    }
+
+    if (
+      oldPrepared &&
+      oldPrepared !== session &&
+      oldPrepared !== oldRescue
+    ) {
+      oldPrepared.destroy().catch(() => {});
+    }
+
+    hidden.id =
+      "playerSeekPromoting";
+
+    oldPlayer.id =
+      "seekPreloadPlayer";
+
+    hidden.id =
+      "player";
+
+    hidden.classList.remove(
+      "video-hot-standby"
+    );
+
+    hidden.removeAttribute(
+      "aria-hidden"
+    );
+
+    oldPlayer.classList.add(
+      "video-hot-standby"
+    );
+
+    oldPlayer.setAttribute(
+      "aria-hidden",
+      "true"
+    );
+
+    hidden.volume = volume;
+    hidden.muted = muted;
+    hidden.playbackRate = rate;
+
+    session.player = hidden;
+    session.active = true;
+
+    seekRescueSession = session;
+    rememberSeekRescue(file.id);
+
+    instantSeekSession = null;
+    instantSeekFileId = null;
+    instantSeekTarget = null;
+    instantSeekPromise = null;
+    instantSeekReady = false;
+
+    initGpuMediaControls();
+    bindVideoPlayerEvents(hidden);
+    setGpuUiActive(gpuWasActive);
+
+    try {
+      oldPlayer.removeAttribute("src");
+      oldPlayer.removeAttribute("poster");
+      oldPlayer.muted = true;
+      oldPlayer.volume = 0;
+      oldPlayer.load();
+    } catch (_) {}
+
+    seekRescueInternalChange = true;
+
+    try {
+      hidden.currentTime = targetTime;
+    } catch (_) {}
+
+    setTimeout(() => {
+      seekRescueInternalChange = false;
+    }, 220);
+
+    applySharpenMode();
+
+    if (gpuWasActive) {
+      syncGpuCanvasSize();
+      renderGpuFrame();
+      scheduleGpuFrames();
+    }
+
+    hideSeekHoldOverlay();
+    syncGpuMediaControls();
+
+    setStatus(
+      "Original · Instant Seek"
+    );
+
+    if (shouldPlay) {
+      try {
+        const promise = hidden.play();
+        promise?.catch?.(() => {});
+      } catch (_) {}
+    }
+
+    return true;
+  }
+
+  async function commitInstantSeek(
+    targetTime
+  ) {
+    const player =
+      document.getElementById(
+        "player"
+      );
+
+    const file =
+      videoPlaylist[
+        currentVideoIndex
+      ];
+
+    if (
+      !player ||
+      !file ||
+      !Number.isFinite(targetTime)
+    ) {
+      return false;
+    }
+
+    const shouldPlay =
+      !player.paused;
+
+    if (instantSeekDebounceTimer) {
+      clearTimeout(instantSeekDebounceTimer);
+      instantSeekDebounceTimer = null;
+    }
+
+    if (!isMp4VideoFile(file)) {
+      player.currentTime =
+        targetTime;
+      return false;
+    }
+
+    showSeekHoldOverlay(
+      targetTime
+    );
+
+    try {
+      player.pause();
+    } catch (_) {}
+
+    /*
+     * 如果拖动阶段已经把这个目标准备好了，
+     * 这里不会重新做工作，直接 promote。
+     */
+    if (
+      instantSeekReady &&
+      Number.isFinite(instantSeekTarget) &&
+      Math.abs(
+        instantSeekTarget - targetTime
+      ) <= 0.8
+    ) {
+      const promoted =
+        await promoteInstantSeekSession(
+          targetTime,
+          shouldPlay
+        );
+
+      if (promoted) {
+        return true;
+      }
+    }
+
+    const existingWork =
+      (
+        instantSeekPromise &&
+        Number.isFinite(instantSeekTarget) &&
+        Math.abs(
+          instantSeekTarget - targetTime
+        ) <= 0.8
+      )
+        ? instantSeekPromise
+        : prepareInstantSeekTarget(
+            targetTime
+          );
+
+    let prepared = false;
+
+    try {
+      prepared = await Promise.race([
+        existingWork,
+        new Promise(resolve =>
+          setTimeout(
+            () => resolve(false),
+            6500
+          )
+        )
+      ]);
+    } catch (_) {}
+
+    if (prepared) {
+      const promoted =
+        await promoteInstantSeekSession(
+          targetTime,
+          shouldPlay
+        );
+
+      if (promoted) {
+        return true;
+      }
+    }
+
+    /*
+     * 最坏情况才回退原生 seek。
+     * 旧画面覆盖层会继续遮住 0 秒闪回，
+     * 之后原有 Seek Rescue watchdog 仍可接管。
+     */
+    seekRescueInternalChange = false;
+
+    try {
+      player.currentTime =
+        targetTime;
+
+      if (shouldPlay) {
+        player.play().catch(() => {});
+      }
+    } catch (_) {}
+
+    setTimeout(() => {
+      if (!player.seeking) {
+        hideSeekHoldOverlay();
+      }
+    }, 1200);
+
+    return false;
+  }
+
+  async function prepareSeekRescueForCurrentFile(force = false) {
     const file = videoPlaylist[currentVideoIndex];
     const player = document.getElementById("player");
 
     if (
       !file ||
       !player ||
-      !isSeekRescueRemembered(file.id) ||
+      (!force && !isSeekRescueRemembered(file.id)) ||
       (
         file.mimeType !== "video/mp4" &&
         !/\.mp4$/i.test(file.name || "")
@@ -5652,6 +6573,8 @@ async function initServiceWorker() {
       this.module = null;
       this.source = null;
       this.input = null;
+      this.videoTrack = null;
+      this.packetSink = null;
       this.mime = "";
 
       this.mediaSource = null;
@@ -5690,13 +6613,15 @@ async function initServiceWorker() {
       const {
         Input,
         UrlSource,
-        ALL_FORMATS
+        ALL_FORMATS,
+        EncodedPacketSink
       } = this.module;
 
       if (
         !Input ||
         !UrlSource ||
-        !ALL_FORMATS
+        !ALL_FORMATS ||
+        !EncodedPacketSink
       ) {
         throw new Error(
           "Mediabunny 模块不完整。"
@@ -5760,6 +6685,14 @@ async function initServiceWorker() {
         );
       }
 
+      this.videoTrack =
+        videoTrack;
+
+      this.packetSink =
+        new EncodedPacketSink(
+          videoTrack
+        );
+
       const audioTrack =
         await this.input
           .getPrimaryAudioTrack();
@@ -5820,6 +6753,50 @@ async function initServiceWorker() {
               .getDurationFromMetadata();
         } catch (_) {}
       }
+    }
+
+    async findKeyframeWindowStart(targetTime) {
+      const fallback = Math.max(
+        0,
+        targetTime - SEEK_RESCUE_WINDOW_BACK_SEC
+      );
+
+      if (!this.packetSink) {
+        return fallback;
+      }
+
+      try {
+        /*
+         * metadataOnly 只读取 packet 索引，不下载真正视频帧。
+         * 直接把 Rescue 起点贴到目标时间之前最近的关键帧，
+         * 避免固定多读 5~10 秒无关 GOP。
+         */
+        const packet =
+          await this.packetSink.getKeyPacket(
+            targetTime,
+            { metadataOnly: true }
+          );
+
+        if (
+          packet &&
+          Number.isFinite(packet.timestamp)
+        ) {
+          return Math.max(
+            0,
+            Math.min(
+              targetTime,
+              packet.timestamp
+            )
+          );
+        }
+      } catch (error) {
+        console.debug(
+          "读取关键帧索引失败，使用回退窗口：",
+          error
+        );
+      }
+
+      return fallback;
     }
 
     async cancelConversion() {
@@ -6083,10 +7060,8 @@ async function initServiceWorker() {
       }
 
       this.windowStart =
-        Math.max(
-          0,
-          targetTime -
-            SEEK_RESCUE_WINDOW_BACK_SEC
+        await this.findKeyframeWindowStart(
+          targetTime
         );
 
       this.generatedUntil = 0;
@@ -6109,7 +7084,15 @@ async function initServiceWorker() {
           10000
         );
 
-      seekRescueInternalChange = true;
+      const affectsActivePlayer =
+        this.player ===
+        document.getElementById(
+          "player"
+        );
+
+      if (affectsActivePlayer) {
+        seekRescueInternalChange = true;
+      }
 
       this.player.src =
         this.objectUrl;
@@ -6119,7 +7102,9 @@ async function initServiceWorker() {
       try {
         await sourceOpen;
       } finally {
-        seekRescueInternalChange = false;
+        if (affectsActivePlayer) {
+          seekRescueInternalChange = false;
+        }
       }
 
       if (
@@ -6158,7 +7143,7 @@ async function initServiceWorker() {
       const format =
         new Mp4OutputFormat({
           fastStart: "fragmented",
-          minimumFragmentDuration: 0.5,
+          minimumFragmentDuration: 0.25,
 
           onFtyp: data => {
             if (
@@ -6330,14 +7315,24 @@ async function initServiceWorker() {
         this.active &&
         this.isBuffered(target)
       ) {
-        seekRescueInternalChange = true;
+        const affectsActivePlayer =
+          this.player ===
+          document.getElementById(
+            "player"
+          );
+
+        if (affectsActivePlayer) {
+          seekRescueInternalChange = true;
+        }
 
         this.player.currentTime =
           target;
 
-        setTimeout(() => {
-          seekRescueInternalChange = false;
-        }, 250);
+        if (affectsActivePlayer) {
+          setTimeout(() => {
+            seekRescueInternalChange = false;
+          }, 250);
+        }
 
         if (shouldPlay) {
           try {
@@ -6359,7 +7354,7 @@ async function initServiceWorker() {
       const initialUntil =
         Math.max(
           SEEK_RESCUE_INITIAL_OUTPUT_SEC,
-          relativeTarget + 4
+          relativeTarget + 1.5
         );
 
       await this.executeUntil(
@@ -6371,7 +7366,7 @@ async function initServiceWorker() {
       const buffered =
         await this.waitUntilBuffered(
           target,
-          9000
+          6000
         );
 
       if (!buffered) {
@@ -6381,14 +7376,24 @@ async function initServiceWorker() {
         );
       }
 
-      seekRescueInternalChange = true;
+      const affectsActivePlayer =
+        this.player ===
+        document.getElementById(
+          "player"
+        );
+
+      if (affectsActivePlayer) {
+        seekRescueInternalChange = true;
+      }
 
       this.player.currentTime =
         target;
 
-      setTimeout(() => {
-        seekRescueInternalChange = false;
-      }, 300);
+      if (affectsActivePlayer) {
+        setTimeout(() => {
+          seekRescueInternalChange = false;
+        }, 300);
+      }
 
       if (shouldPlay) {
         try {
@@ -6494,6 +7499,8 @@ async function initServiceWorker() {
 
       this.input = null;
       this.source = null;
+      this.videoTrack = null;
+      this.packetSink = null;
     }
   }
 
