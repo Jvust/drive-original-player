@@ -13,6 +13,14 @@ const MEDIA_PREFIX = "/drive-original-player/media/";
 const AUTH_STATE_CACHE = "drive-original-player-auth-v2";
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB：比旧版 16 MB 更适合 seek
 
+/*
+ * 快速切换：只在内存中预热相邻视频前 2 MB。
+ * 不缓存整个视频，也不会降低原始画质。
+ */
+const PRIME_BYTES = 2 * 1024 * 1024;
+const PRIME_MAX_ENTRIES = 4;
+const primeMediaCache = new Map();
+
 // 不再只保存一个 currentFileId。
 // 批量播放/切换视频时，不同文件可以同时存在短暂的请求。
 const fileStates = new Map();
@@ -98,6 +106,223 @@ async function getFileState(fileId) {
   }
 }
 
+
+function touchPrimeCache(fileId, entry) {
+  if (primeMediaCache.has(fileId)) {
+    primeMediaCache.delete(fileId);
+  }
+
+  primeMediaCache.set(fileId, entry);
+
+  while (
+    primeMediaCache.size >
+      PRIME_MAX_ENTRIES
+  ) {
+    const oldestKey =
+      primeMediaCache
+        .keys()
+        .next()
+        .value;
+
+    primeMediaCache.delete(oldestKey);
+  }
+}
+
+async function primeMediaFile({
+  fileId,
+  token,
+  fileSize,
+  resourceKey
+}) {
+  fileId = String(fileId || "");
+  fileSize = Number(fileSize);
+
+  if (
+    !fileId ||
+    !token ||
+    !Number.isFinite(fileSize) ||
+    fileSize <= 0
+  ) {
+    return false;
+  }
+
+  const existing =
+    primeMediaCache.get(fileId);
+
+  if (
+    existing &&
+    existing.token === token &&
+    existing.buffer?.byteLength > 0
+  ) {
+    touchPrimeCache(
+      fileId,
+      existing
+    );
+    return true;
+  }
+
+  await saveFileState(
+    fileId,
+    {
+      accessToken: token,
+      fileSize
+    }
+  );
+
+  const end =
+    Math.min(
+      fileSize - 1,
+      PRIME_BYTES - 1
+    );
+
+  const driveURL =
+    "https://www.googleapis.com/drive/v3/files/" +
+    encodeURIComponent(fileId) +
+    "?alt=media";
+
+  const headers =
+    new Headers();
+
+  headers.set(
+    "Authorization",
+    "Bearer " + token
+  );
+
+  headers.set(
+    "Range",
+    `bytes=0-${end}`
+  );
+
+  if (resourceKey) {
+    headers.set(
+      "X-Goog-Drive-Resource-Keys",
+      fileId + "/" + resourceKey
+    );
+  }
+
+  try {
+    const response =
+      await fetch(
+        driveURL,
+        {
+          method: "GET",
+          headers
+        }
+      );
+
+    if (
+      response.status !== 206 &&
+      !response.ok
+    ) {
+      return false;
+    }
+
+    const buffer =
+      await response.arrayBuffer();
+
+    if (!buffer.byteLength) {
+      return false;
+    }
+
+    touchPrimeCache(
+      fileId,
+      {
+        token,
+        resourceKey:
+          resourceKey || null,
+        buffer,
+        contentType:
+          response.headers.get(
+            "Content-Type"
+          ) || "video/mp4",
+        createdAt:
+          Date.now()
+      }
+    );
+
+    return true;
+  } catch (error) {
+    console.debug(
+      "Prime media failed:",
+      error
+    );
+    return false;
+  }
+}
+
+function getPrimeResponse(
+  fileId,
+  parsedRange,
+  fileSize
+) {
+  if (
+    !parsedRange ||
+    parsedRange.start !== 0 ||
+    !Number.isFinite(
+      parsedRange.end
+    )
+  ) {
+    return null;
+  }
+
+  const entry =
+    primeMediaCache.get(
+      String(fileId)
+    );
+
+  if (
+    !entry ||
+    !entry.buffer ||
+    entry.buffer.byteLength <= 0
+  ) {
+    return null;
+  }
+
+  const availableEnd =
+    Math.min(
+      parsedRange.end,
+      entry.buffer.byteLength - 1,
+      fileSize - 1
+    );
+
+  if (availableEnd < 0) {
+    return null;
+  }
+
+  touchPrimeCache(
+    String(fileId),
+    entry
+  );
+
+  const slice =
+    entry.buffer.slice(
+      0,
+      availableEnd + 1
+    );
+
+  return new Response(
+    slice,
+    {
+      status: 206,
+      headers: {
+        "Content-Type":
+          entry.contentType ||
+          "video/mp4",
+        "Content-Length":
+          String(
+            slice.byteLength
+          ),
+        "Content-Range":
+          `bytes 0-${availableEnd}/${fileSize}`,
+        "Accept-Ranges":
+          "bytes",
+        "Cache-Control":
+          "no-store"
+      }
+    }
+  );
+}
+
 self.addEventListener("install", () => {
   self.skipWaiting();
 });
@@ -107,21 +332,75 @@ self.addEventListener("activate", event => {
 });
 
 self.addEventListener("message", event => {
+  const data =
+    event.data || {};
+
+  const reply =
+    payload => {
+      try {
+        if (event.ports?.[0]) {
+          event.ports[0]
+            .postMessage(payload);
+        }
+      } catch (_) {}
+    };
+
   if (
-    event.data &&
-    event.data.type === "SET_TOKEN" &&
-    event.data.fileId &&
-    event.data.token
+    data.type === "SET_TOKEN" &&
+    data.fileId &&
+    data.token
   ) {
-    event.waitUntil(
+    const work =
       saveFileState(
-        String(event.data.fileId),
+        String(data.fileId),
         {
-          accessToken: event.data.token,
-          fileSize: Number(event.data.fileSize)
+          accessToken:
+            data.token,
+          fileSize:
+            Number(data.fileSize)
         }
       )
-    );
+        .then(() => {
+          reply({ ok: true });
+        })
+        .catch(error => {
+          console.error(
+            "SET_TOKEN failed:",
+            error
+          );
+
+          reply({
+            ok: false,
+            error:
+              String(error)
+          });
+        });
+
+    event.waitUntil(work);
+    return;
+  }
+
+  if (
+    data.type === "PRIME_MEDIA" &&
+    data.fileId &&
+    data.token
+  ) {
+    const work =
+      primeMediaFile({
+        fileId:
+          data.fileId,
+        token:
+          data.token,
+        fileSize:
+          Number(data.fileSize),
+        resourceKey:
+          data.resourceKey || null
+      })
+        .then(ok => {
+          reply({ ok });
+        });
+
+    event.waitUntil(work);
   }
 });
 
@@ -365,6 +644,23 @@ async function streamDriveFile(request, url) {
         "Range",
         parsedRange.original
       );
+    }
+  }
+
+  if (
+    request.method === "GET" &&
+    parsedRange &&
+    parsedRange.start === 0
+  ) {
+    const primeResponse =
+      getPrimeResponse(
+        fileId,
+        parsedRange,
+        fileSize
+      );
+
+    if (primeResponse) {
+      return primeResponse;
     }
   }
 

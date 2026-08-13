@@ -2,10 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#08090b" />
-  <meta name="color-scheme" content="dark" />
-  <title>Drive Original Player · Quality First</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drive Original Player · High Quality</title>
 
   <style>
     * {
@@ -615,367 +613,111 @@
       margin-top: 16px;
       white-space: pre-wrap;
     }
-
+  
 
     /* ============================================================
-     * Quality First UI · 2026 preview
-     * 只重做视觉层，不覆盖核心 Drive / Range / Rescue 逻辑。
+     * User Background Image
      * ============================================================ */
     :root {
-      --q-bg: #08090b;
-      --q-surface: #101216;
-      --q-surface-2: #15181d;
-      --q-surface-3: rgba(18, 20, 24, .88);
-      --q-line: rgba(255, 255, 255, .085);
-      --q-line-strong: rgba(255, 255, 255, .14);
-      --q-text: #f4f5f7;
-      --q-muted: #a2a8b0;
-      --q-dim: #747b85;
-      --q-accent: #f4f5f7;
-      --q-good: #8bd39a;
-      --q-danger: #ff8d94;
-      --q-radius: 14px;
-      color-scheme: dark;
+      --page-bg-dim: .52;
     }
 
-    html { background: var(--q-bg); }
+    html {
+      background: #08090b;
+    }
+
     body {
+      position: relative;
+      isolation: isolate;
+      background: transparent;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: -10px;
+      z-index: -2;
+      pointer-events: none;
       background:
-        radial-gradient(1000px 480px at 50% -220px, rgba(255,255,255,.055), transparent 72%),
-        var(--q-bg);
-      color: var(--q-text);
-      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      letter-spacing: .002em;
+        url("./assets/background.webp")
+        center center / cover
+        no-repeat;
+      filter:
+        blur(1.5px)
+        saturate(.88);
+      transform: scale(1.012);
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        linear-gradient(
+          180deg,
+          rgba(4,5,7,.38) 0%,
+          rgba(4,5,7,var(--page-bg-dim)) 42%,
+          rgba(4,5,7,.66) 100%
+        );
     }
 
     header {
-      position: sticky;
-      top: 0;
-      z-index: 80;
-      height: 54px;
-      padding: 0 clamp(14px, 2.2vw, 30px);
-      background: rgba(8,9,11,.78);
-      border-bottom: 1px solid var(--q-line);
-      backdrop-filter: blur(18px) saturate(125%);
-      -webkit-backdrop-filter: blur(18px) saturate(125%);
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--q-text);
-      font-size: 14px;
-      font-weight: 680;
-      letter-spacing: -.01em;
-    }
-
-    .logo-mark {
-      display: grid;
-      place-items: center;
-      width: 26px;
-      height: 26px;
-      border: 1px solid rgba(255,255,255,.16);
-      border-radius: 8px;
-      background: linear-gradient(145deg, #23272e, #111318);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 6px 22px rgba(0,0,0,.24);
-      font-size: 12px;
-      font-weight: 800;
-    }
-
-    .logo-copy { display: flex; align-items: baseline; gap: 8px; }
-    .logo-copy small {
-      color: var(--q-dim);
-      font-size: 9px;
-      font-weight: 720;
-      letter-spacing: .13em;
-    }
-
-    #status {
-      max-width: min(54vw, 650px);
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      color: var(--q-muted);
-      font-size: 12px;
-      font-variant-numeric: tabular-nums;
-    }
-
-    main {
-      min-height: calc(100vh - 54px);
-      justify-content: flex-start;
-      padding: clamp(12px, 2vw, 26px);
+      background: rgba(10,11,13,.68);
+      border-bottom-color: rgba(255,255,255,.10);
+      backdrop-filter: blur(18px) saturate(120%);
+      -webkit-backdrop-filter: blur(18px) saturate(120%);
     }
 
     #welcome {
-      width: 100%;
-      min-height: calc(100vh - 110px);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      padding: 30px 34px;
+      border: 1px solid rgba(255,255,255,.10);
+      border-radius: 16px;
+      background: rgba(8,9,11,.48);
+      box-shadow: 0 18px 70px rgba(0,0,0,.24);
+      backdrop-filter: blur(14px) saturate(110%);
+      -webkit-backdrop-filter: blur(14px) saturate(110%);
     }
-    #welcome h1 { margin: 0 0 8px; font-size: clamp(25px, 3.2vw, 38px); letter-spacing: -.035em; }
-    #welcome p { margin: 0 0 24px; color: var(--q-muted); }
-
-    button {
-      min-height: 38px;
-      border: 1px solid var(--q-line-strong);
-      border-radius: 10px;
-      padding: 9px 14px;
-      background: #f0f1f3;
-      color: #101114;
-      font: inherit;
-      font-size: 13px;
-      font-weight: 620;
-      transition: background .16s ease, border-color .16s ease, transform .16s ease, opacity .16s ease;
-    }
-    button:hover { background: #fff; border-color: rgba(255,255,255,.24); }
-    button:active { transform: translateY(1px); }
-    button:focus-visible { outline: 2px solid rgba(255,255,255,.82); outline-offset: 2px; }
-
-    #playerWrap {
-      max-width: 1720px;
-      margin: 0 auto;
-    }
-
-    #videoStage {
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,.07);
-      border-radius: var(--q-radius);
-      background: #000;
-      box-shadow: 0 24px 80px rgba(0,0,0,.28);
-    }
-
-    video { max-height: calc(100vh - 190px); }
-
-    #videoQuickControls { top: 10px; right: 10px; gap: 6px; }
-    #videoQuickControls button {
-      min-height: 34px;
-      padding: 7px 11px;
-      border: 1px solid rgba(255,255,255,.12);
-      border-radius: 10px;
-      background: rgba(12,13,15,.70);
-      color: #f5f6f8;
-      box-shadow: 0 8px 26px rgba(0,0,0,.24);
-      backdrop-filter: blur(14px) saturate(120%);
-      -webkit-backdrop-filter: blur(14px) saturate(120%);
-    }
-    #videoQuickControls button:hover { background: rgba(30,32,36,.86); }
-
-    #gpuMediaControls {
-      gap: 8px;
-      margin-top: 9px;
-      padding: 8px 10px;
-      border: 1px solid var(--q-line);
-      border-radius: 12px;
-      background: rgba(16,18,22,.88);
-      box-shadow: 0 10px 28px rgba(0,0,0,.16);
-      backdrop-filter: blur(14px);
-    }
-    #gpuMediaControls button {
-      min-height: 34px;
-      padding: 7px 11px;
-      border-color: transparent;
-      background: #22262d;
-      color: #f5f6f8;
-    }
-    #gpuMediaControls button:hover { background: #2b3038; }
-    #gpuSeek, #gpuVolume { accent-color: #f3f4f6; }
-    #gpuTime { color: #c0c5cc; }
 
     #info {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 48px;
-      padding: 12px 2px 4px;
-    }
-    #filename {
-      min-width: 0;
-      flex: 1;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      color: var(--q-text);
-      font-size: 14px;
-      font-weight: 610;
-      letter-spacing: -.01em;
-    }
-    #quality {
-      flex: 0 0 auto;
-      margin: 0;
-      padding: 5px 8px;
-      border: 1px solid rgba(139,211,154,.20);
-      border-radius: 999px;
-      background: rgba(139,211,154,.07);
-      color: var(--q-good);
-      font-size: 11px;
-      line-height: 1;
-      white-space: nowrap;
-    }
-
-    .player-tools {
-      gap: 7px;
-      margin-top: 5px;
-      padding: 7px;
-      border: 1px solid var(--q-line);
-      border-radius: 12px;
-      background: rgba(15,17,20,.72);
-      width: fit-content;
-      max-width: 100%;
-    }
-    .player-tools button {
-      min-height: 34px;
-      padding: 7px 11px;
-      border: 1px solid transparent;
-      background: transparent;
-      color: #c7cbd1;
-      font-size: 12px;
-      font-weight: 580;
-    }
-    .player-tools button:hover {
-      border-color: var(--q-line);
-      background: rgba(255,255,255,.055);
-      color: #fff;
-    }
-
-    #diagnosticPanel.open {
-      display: block;
-      position: fixed;
-      top: 68px;
-      right: 18px;
-      bottom: 18px;
-      z-index: 90;
-      width: min(430px, calc(100vw - 28px));
-      margin: 0;
-      padding: 18px;
-      overflow: auto;
-      border: 1px solid rgba(255,255,255,.12);
-      border-radius: 16px;
-      background: rgba(12,14,17,.94);
-      color: #d7dbe0;
-      box-shadow: 0 28px 90px rgba(0,0,0,.50);
-      backdrop-filter: blur(22px) saturate(120%);
-      -webkit-backdrop-filter: blur(22px) saturate(120%);
-      font-size: 12px;
-      line-height: 1.72;
-    }
-
-    #videoPlaylistDrawer {
-      width: min(448px, 90vw);
-      background: rgba(10,11,13,.94);
-      border-left-color: rgba(255,255,255,.09);
-      box-shadow: -28px 0 80px rgba(0,0,0,.42);
-      backdrop-filter: blur(22px) saturate(125%);
-    }
-    .playlist-head { min-height: 56px; padding: 10px 12px; border-color: var(--q-line); }
-    #playlistTitle { font-size: 12px; color: #d7dbe0; }
-    .playlist-head button, .playlist-foot button {
-      background: #20242a;
-      color: #e7e9ec;
-      border-color: var(--q-line);
-    }
-    #videoPlaylistItems { padding: 8px 8px 14px; scrollbar-width: thin; scrollbar-color: #343941 transparent; }
-    .drive-folder-row {
-      min-height: 40px;
-      padding-top: 7px;
-      padding-bottom: 7px;
-      color: #d9dce1;
-      border: 1px solid transparent;
-    }
-    .drive-folder-row:hover { border-color: var(--q-line); background: rgba(255,255,255,.045); }
-    .drive-folder-icon {
-      position: relative;
-      width: 15px;
-      height: 11px;
-      margin: 1px 1px 0 0;
-      border: 1px solid rgba(220,224,230,.55);
-      border-radius: 3px;
-      background: rgba(255,255,255,.035);
-      font-size: 0;
-    }
-    .drive-folder-icon::before {
-      content: "";
-      position: absolute;
-      left: 1px;
-      top: -4px;
-      width: 7px;
-      height: 4px;
-      border: 1px solid rgba(220,224,230,.55);
-      border-bottom: 0;
-      border-radius: 3px 3px 0 0;
-      background: #111318;
-    }
-    .drive-folder-children { border-left-color: rgba(255,255,255,.075); }
-    .drive-folder-count { color: #777f89; }
-    .video-playlist-item {
-      border: 1px solid transparent;
+      margin-top: 10px;
+      padding: 12px 14px;
+      border: 1px solid rgba(255,255,255,.09);
       border-radius: 10px;
-    }
-    .video-playlist-item:hover { background: rgba(255,255,255,.055); border-color: var(--q-line); }
-    .video-playlist-item.active {
-      background: rgba(255,255,255,.085);
-      border-color: rgba(255,255,255,.14);
-      outline: none;
-    }
-    .video-thumb-wrap {
-      border: 1px solid rgba(255,255,255,.07);
-      background: #17191d;
-    }
-    .video-playlist-name { color: #e9ebee; }
-    .video-playlist-sub { color: #858c96; }
-
-    #error { color: var(--q-danger); }
-
-    #playerWrap:fullscreen #videoStage,
-    #playerWrap:-webkit-full-screen #videoStage {
-      border: 0;
-      border-radius: 0;
-      box-shadow: none;
-    }
-    #playerWrap:fullscreen #gpuMediaControls,
-    #playerWrap:-webkit-full-screen #gpuMediaControls {
-      bottom: max(14px, env(safe-area-inset-bottom));
-      border-color: rgba(255,255,255,.10);
-      background: rgba(8,9,11,.66);
-      box-shadow: 0 18px 60px rgba(0,0,0,.32);
-      backdrop-filter: blur(18px);
+      background: rgba(8,9,11,.46);
+      backdrop-filter: blur(12px) saturate(110%);
+      -webkit-backdrop-filter: blur(12px) saturate(110%);
     }
 
     @media (max-width: 700px) {
-      header { height: 50px; padding: 0 12px; }
-      .logo-copy small { display: none; }
-      #status { max-width: 46vw; }
-      main { min-height: calc(100vh - 50px); padding: 8px; }
-      #videoStage { border-radius: 10px; }
-      video { max-height: calc(100vh - 150px); }
-      #info { min-height: 42px; padding: 10px 2px 2px; gap: 6px; }
-      #filename { font-size: 13px; }
-      #quality { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
-      .player-tools { width: 100%; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
-      .player-tools::-webkit-scrollbar { display: none; }
-      .player-tools button { flex: 0 0 auto; min-height: 40px; }
-      #diagnosticPanel.open {
-        top: auto;
-        right: 8px;
-        left: 8px;
-        bottom: max(8px, env(safe-area-inset-bottom));
-        width: auto;
-        max-height: 68vh;
-        border-radius: 16px;
+      body::before {
+        background-position: center center;
+        filter:
+          blur(1px)
+          saturate(.86);
+      }
+
+      body::after {
+        background:
+          rgba(4,5,7,.58);
+      }
+
+      #welcome {
+        padding: 24px 18px;
       }
     }
 
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        scroll-behavior: auto !important;
-        transition-duration: .01ms !important;
-        animation-duration: .01ms !important;
+    @media (prefers-reduced-transparency: reduce) {
+      header,
+      #welcome,
+      #info {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
     }
 
-  </style>
+</style>
 </head>
 
 <body>
@@ -1000,7 +742,7 @@
 </svg>
 
 <header>
-  <div class="logo"><span class="logo-mark">D</span><span class="logo-copy">Drive Original Player<small>QUALITY FIRST</small></span></div>
+  <div class="logo">Drive Original Player</div>
   <div id="status">等待授权</div>
 </header>
 
@@ -1055,30 +797,30 @@
       <input id="gpuVolume" type="range" min="0" max="1" value="1" step="0.05" aria-label="音量" />
     </div>
 
-    <div id="info">
-      <div id="filename"></div>
-      <div id="quality"></div>
-    </div>
-
-    <div class="player-tools" aria-label="播放器工具">
-      <button id="rotateBtn" onclick="toggleRotate()" title="旋转画面 90°">
-        旋转
+    <div class="player-tools">
+      <button id="rotateBtn" onclick="toggleRotate()">
+        旋转 90°
       </button>
-      <button id="webFullscreenBtn" onclick="toggleWebFullscreen()" title="全屏后控件自动隐藏；移动鼠标或触摸屏幕可再次显示">
+      <button id="webFullscreenBtn" onclick="toggleWebFullscreen()" title="全屏后控件会自动隐藏；移动鼠标或触摸屏幕可再次显示">
         全屏
       </button>
       <button id="sharpenBtn" onclick="cycleSharpenMode()" title="只改变显示效果，不修改 Google Drive 原视频">
         画质：平衡
       </button>
-      <button id="diagnosticBtn" onclick="toggleDiagnostic()" title="打开画质与播放状态诊断">
-        诊断
+      <button id="diagnosticBtn" onclick="toggleDiagnostic()">
+        画质诊断
       </button>
       <button id="copyDiagnosticBtn" onclick="copyDiagnostic()" style="display:none">
         复制诊断
       </button>
     </div>
 
-    <div id="diagnosticPanel" role="region" aria-label="视频画质诊断"></div>
+    <div id="diagnosticPanel"></div>
+
+    <div id="info">
+      <div id="filename"></div>
+      <div id="quality"></div>
+    </div>
   </div>
 
 </main>
@@ -1107,14 +849,18 @@
   let gpuHealthTimer = null;
   let gpuHealthPrevTotal = 0;
   let gpuHealthPrevDropped = 0;
-  let gpuHealthBadWindows = 0;
-  const GPU_FALLBACK_UNTIL_KEY = "drive_player_gpu_fallback_until";
-  let gpuFallbackUntil = Number(
-    sessionStorage.getItem(GPU_FALLBACK_UNTIL_KEY) || 0
-  );
-  let performanceFallback = Date.now() < gpuFallbackUntil;
-  const GPU_FALLBACK_COOLDOWN_MS = 10 * 60 * 1000;
+  let performanceFallback =
+    sessionStorage.getItem("drive_player_gpu_fallback") === "1";
   const VIDEO_UI_HIDE_DELAY = 2200;
+
+  /*
+   * 快速切换：
+   * 播放列表 DOM 只构建一次。
+   * 切视频时只更新 active / 展开状态。
+   */
+  let videoPlaylistDomReady = false;
+  let adjacentPrimeTimer = null;
+  let switchGeneration = 0;
 
   function detectSmoothDevice() {
     const ua = navigator.userAgent || "";
@@ -2548,12 +2294,6 @@ function buildDiagnosticText() {
       (gpuActive ? gpuColorSpace : "由浏览器原生视频决定"),
     "Seek Rescue：     " +
       getSeekRescueDiagnosticText(),
-    "性能策略：       " +
-      (smoothDeviceMode
-        ? "移动设备原生优先"
-        : performanceFallback
-          ? "临时流畅回退（10 分钟冷却）"
-          : "画质优先 · 持续掉帧才回退"),
     "WebGPU：          " +
       (gpuSupported() ? (gpuActive ? "已启用" : "可用") : "不支持"),
     gpuLastError
@@ -3205,6 +2945,208 @@ async function initServiceWorker() {
     return (value / 1024).toFixed(0) + " KB";
   }
 
+
+  function syncVideoPlaylistDomState() {
+    const items =
+      document.getElementById(
+        "videoPlaylistItems"
+      );
+
+    if (!items) return;
+
+    const previous =
+      items.querySelector(
+        ".video-playlist-item.active"
+      );
+
+    if (previous) {
+      previous.classList.remove(
+        "active"
+      );
+
+      previous.removeAttribute(
+        "aria-current"
+      );
+    }
+
+    const current =
+      items.querySelector(
+        `.video-playlist-item[data-index="${currentVideoIndex}"]`
+      );
+
+    if (current) {
+      current.classList.add(
+        "active"
+      );
+
+      current.setAttribute(
+        "aria-current",
+        "true"
+      );
+    }
+
+    for (
+      const folder of
+      items.querySelectorAll(
+        ".drive-tree-folder[data-folder-id]"
+      )
+    ) {
+      const folderId =
+        folder.dataset.folderId;
+
+      folder.classList.toggle(
+        "collapsed",
+        !expandedVideoFolders.has(
+          folderId
+        )
+      );
+    }
+  }
+
+  function postWorkerMessage(
+    worker,
+    data,
+    timeout = 260
+  ) {
+    return new Promise(resolve => {
+      if (!worker) {
+        resolve(false);
+        return;
+      }
+
+      const channel =
+        new MessageChannel();
+
+      let settled = false;
+
+      const finish =
+        value => {
+          if (settled) return;
+          settled = true;
+
+          clearTimeout(timer);
+
+          try {
+            channel.port1.close();
+          } catch (_) {}
+
+          resolve(value);
+        };
+
+      channel.port1.onmessage =
+        event => {
+          finish(
+            !!event.data?.ok
+          );
+        };
+
+      const timer =
+        setTimeout(
+          () => finish(false),
+          timeout
+        );
+
+      try {
+        worker.postMessage(
+          data,
+          [channel.port2]
+        );
+      } catch (_) {
+        finish(false);
+      }
+    });
+  }
+
+  function scheduleAdjacentVideoPrime() {
+    if (adjacentPrimeTimer) {
+      clearTimeout(
+        adjacentPrimeTimer
+      );
+    }
+
+    adjacentPrimeTimer =
+      setTimeout(
+        () => {
+          adjacentPrimeTimer = null;
+          primeAdjacentVideos();
+        },
+        180
+      );
+  }
+
+  async function primeAdjacentVideos() {
+    if (
+      !serviceWorkerReady ||
+      !currentAccessToken ||
+      !videoPlaylist.length
+    ) {
+      return;
+    }
+
+    let worker = null;
+
+    try {
+      const registration =
+        await navigator
+          .serviceWorker
+          .ready;
+
+      worker =
+        navigator.serviceWorker.controller ||
+        registration.active;
+    } catch (_) {
+      return;
+    }
+
+    if (!worker) return;
+
+    const candidates = [];
+
+    const nextIndex =
+      currentVideoIndex + 1;
+
+    if (
+      nextIndex >= 0 &&
+      nextIndex <
+        videoPlaylist.length
+    ) {
+      candidates.push(
+        videoPlaylist[nextIndex]
+      );
+    }
+
+    if (!smoothDeviceMode) {
+      const previousIndex =
+        currentVideoIndex - 1;
+
+      if (previousIndex >= 0) {
+        candidates.push(
+          videoPlaylist[
+            previousIndex
+          ]
+        );
+      }
+    }
+
+    for (
+      const file of candidates
+    ) {
+      if (!file?.id) continue;
+
+      worker.postMessage({
+        type: "PRIME_MEDIA",
+        token:
+          currentAccessToken,
+        fileId:
+          file.id,
+        fileSize:
+          Number(file.size),
+        resourceKey:
+          file.resourceKey || null
+      });
+    }
+  }
+
   function renderVideoPlaylist() {
     const items =
       document.getElementById("videoPlaylistItems");
@@ -3239,6 +3181,8 @@ async function initServiceWorker() {
           createVideoTreeMediaItem(file, index)
         );
       });
+
+      videoPlaylistDomReady = true;
       return;
     }
 
@@ -3284,7 +3228,7 @@ async function initServiceWorker() {
       icon.className =
         "drive-folder-icon";
 
-      icon.textContent = "";
+      icon.textContent = "📁";
 
       const name =
         document.createElement("span");
@@ -3390,6 +3334,8 @@ async function initServiceWorker() {
     items.appendChild(
       renderFolder(videoTreeRoot, 0)
     );
+
+    videoPlaylistDomReady = true;
   }
 
   function createVideoTreeMediaItem(file, index) {
@@ -3527,7 +3473,11 @@ async function initServiceWorker() {
       currentFileId
     );
 
-    renderVideoPlaylist();
+    if (!videoPlaylistDomReady) {
+      renderVideoPlaylist();
+    } else {
+      syncVideoPlaylistDomState();
+    }
 
     requestAnimationFrame(() => {
       const active = document.querySelector(
@@ -3562,14 +3512,12 @@ async function initServiceWorker() {
     if (!videoPlaylist.length) return;
     const next = currentVideoIndex > 0 ? currentVideoIndex - 1 : videoPlaylist.length - 1;
     await switchVideoByIndex(next, true);
-    renderVideoPlaylist();
   }
 
   async function playNextVideo() {
     if (!videoPlaylist.length) return;
     const next = currentVideoIndex + 1 < videoPlaylist.length ? currentVideoIndex + 1 : 0;
     await switchVideoByIndex(next, true);
-    renderVideoPlaylist();
   }
 
   function updateVideoInfo(file) {
@@ -3582,44 +3530,58 @@ async function initServiceWorker() {
   }
 
   async function sendCurrentVideoStateToWorker(file) {
-    if (!serviceWorkerReady) throw new Error("视频流服务尚未准备完成，请刷新页面后重试。");
-    const registration = await navigator.serviceWorker.ready;
-    const worker = navigator.serviceWorker.controller || registration.active;
-    if (!worker) throw new Error("Service Worker 尚未接管当前页面。请刷新后重试。");
+    if (!serviceWorkerReady) {
+      throw new Error(
+        "视频流服务尚未准备完成，请刷新页面后重试。"
+      );
+    }
 
-    worker.postMessage({
-      type: "SET_TOKEN",
-      token: currentAccessToken,
-      fileId: file.id,
-      fileSize: Number(file.size)
-    });
+    const registration =
+      await navigator
+        .serviceWorker
+        .ready;
 
-    await new Promise(resolve => setTimeout(resolve, 120));
+    const worker =
+      navigator.serviceWorker.controller ||
+      registration.active;
+
+    if (!worker) {
+      throw new Error(
+        "Service Worker 尚未接管当前页面。请刷新后重试。"
+      );
+    }
+
+    await postWorkerMessage(
+      worker,
+      {
+        type: "SET_TOKEN",
+        token:
+          currentAccessToken,
+        fileId:
+          file.id,
+        fileSize:
+          Number(file.size)
+      },
+      260
+    );
   }
 
   async function switchVideoByIndex(index, autoplay = true) {
     const file = videoPlaylist[index];
     if (!file) return;
 
+    const generation =
+      ++switchGeneration;
+
     /*
      * 切换到另一条视频前销毁旧 MSE Rescue。
      */
     destroySeekRescue();
 
-    if (performanceFallback && Date.now() >= gpuFallbackUntil) {
-      performanceFallback = false;
-      gpuFallbackUntil = 0;
-      sessionStorage.removeItem(GPU_FALLBACK_UNTIL_KEY);
-      gpuHealthBadWindows = 0;
-    }
-
     currentVideoIndex = index;
     currentFileId = file.id;
     currentResourceKey = file.resourceKey || null;
     currentFileSize = Number(file.size);
-    gpuHealthPrevTotal = 0;
-    gpuHealthPrevDropped = 0;
-    gpuHealthBadWindows = 0;
 
     /*
      * 上一条 / 下一条 / 自动连播跨文件夹时，
@@ -3632,7 +3594,10 @@ async function initServiceWorker() {
     );
 
     updateVideoInfo(file);
-    renderVideoPlaylist();
+
+    if (videoPlaylistDomReady) {
+      syncVideoPlaylistDomState();
+    }
 
     if (file.capabilities && file.capabilities.canDownload === false) {
       showError("这个 Google Drive 文件禁止下载，因此无法播放原文件。");
@@ -3640,6 +3605,13 @@ async function initServiceWorker() {
     }
 
     await sendCurrentVideoStateToWorker(file);
+
+    if (
+      generation !==
+        switchGeneration
+    ) {
+      return;
+    }
 
     let mediaUrl = "./media/" + encodeURIComponent(file.id);
     if (currentResourceKey) {
@@ -3666,10 +3638,34 @@ async function initServiceWorker() {
     );
 
     if (autoplay) {
-      try { await player.play(); } catch (error) { console.log("等待用户点击播放：", error); }
+      try {
+        const playPromise =
+          player.play();
+
+        if (
+          playPromise &&
+          typeof playPromise.catch ===
+            "function"
+        ) {
+          playPromise.catch(
+            error => {
+              console.log(
+                "等待用户点击播放：",
+                error
+              );
+            }
+          );
+        }
+      } catch (error) {
+        console.log(
+          "等待用户点击播放：",
+          error
+        );
+      }
     }
 
     showWatchUi();
+    scheduleAdjacentVideoPrime();
   }
 
   function startGpuHealthMonitor() {
@@ -3702,28 +3698,16 @@ async function initServiceWorker() {
 
         const ratio = deltaDropped / deltaTotal;
 
-        // 质量优先但不容忍持续掉帧：
-        // - 一次轻微抖动不会立刻永久降级；
-        // - 连续两个窗口明显掉帧，或单窗口严重掉帧，才回退。
-        const badWindow = deltaDropped >= 6 && ratio >= 0.035;
-        const severeWindow = deltaDropped >= 12 && ratio >= 0.10;
-
-        if (badWindow) gpuHealthBadWindows += 1;
-        else gpuHealthBadWindows = Math.max(0, gpuHealthBadWindows - 1);
-
-        if (severeWindow || gpuHealthBadWindows >= 2) {
+        // 持续掉帧约 3.5% 以上时自动回退，优先保证观看流畅。
+        if (deltaDropped >= 6 && ratio >= 0.035) {
           performanceFallback = true;
-          gpuFallbackUntil = Date.now() + GPU_FALLBACK_COOLDOWN_MS;
-          sessionStorage.setItem(
-            GPU_FALLBACK_UNTIL_KEY,
-            String(gpuFallbackUntil)
-          );
+          sessionStorage.setItem("drive_player_gpu_fallback", "1");
           disableWebGPUEnhancement(false);
           applySharpenMode();
           setStatus("Original · 流畅模式（自动）");
           console.warn(
-            "检测到持续 WebGPU 掉帧，已临时切换到原生视频渲染。",
-            { deltaTotal, deltaDropped, ratio, gpuHealthBadWindows }
+            "检测到 WebGPU 渲染掉帧，已自动切换到原生视频渲染。",
+            { deltaTotal, deltaDropped, ratio }
           );
         }
       } catch (error) {
@@ -3762,6 +3746,8 @@ async function initServiceWorker() {
       syncGpuCanvasSize();
       renderGpuFrame();
       updateDiagnostic();
+
+      scheduleAdjacentVideoPrime();
     });
 
     player.addEventListener("resize", () => {
@@ -4094,13 +4080,7 @@ async function initServiceWorker() {
             parallelism: 4,
             requestInit: {
               cache: "no-store"
-            },
-            // Rescue 不能无限重试，否则用户会看到永久“启动中”。
-            // 最多重试 3 次并快速回退到原生播放。
-            getRetryDelay: (previousAttempts) =>
-              previousAttempts >= 3
-                ? null
-                : Math.min(0.6 * (2 ** previousAttempts), 2.4)
+            }
           }
         );
 
@@ -5042,20 +5022,10 @@ async function initServiceWorker() {
         );
 
         try {
-          await Promise.race([
-            session.activate(
-              targetTime,
-              shouldPlay
-            ),
-            new Promise((_, reject) =>
-              setTimeout(
-                () => reject(
-                  new Error("Seek Rescue 总启动时间超过 25 秒。")
-                ),
-                25000
-              )
-            )
-          ]);
+          await session.activate(
+            targetTime,
+            shouldPlay
+          );
 
           rememberSeekRescue(
             file.id
@@ -5615,8 +5585,14 @@ function authorizeDrive() {
       document.getElementById("videoListBtn").style.display = (videoTreeRoot || videoPlaylist.length > 1) ? "inline-block" : "none";
 
       initVideoPlayerEventsOnce();
+
+      videoPlaylistDomReady = false;
       renderVideoPlaylist();
-      await switchVideoByIndex(currentVideoIndex, true);
+
+      await switchVideoByIndex(
+        currentVideoIndex,
+        true
+      );
     } catch (err) {
       console.error(err);
       setStatus("读取失败");
