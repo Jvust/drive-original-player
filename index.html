@@ -613,13 +613,19 @@
       margin-top: 16px;
       white-space: pre-wrap;
     }
-  
+
+
+
 
     /* ============================================================
-     * User Background Image
+     * Sharp Background Slideshow · 5 s
      * ============================================================ */
-    :root {
-      --page-bg-dim: .52;
+    body::before,
+    body::after {
+      content: none !important;
+      display: none !important;
+      filter: none !important;
+      transform: none !important;
     }
 
     html {
@@ -629,91 +635,53 @@
     body {
       position: relative;
       isolation: isolate;
-      background: transparent;
+      background: transparent !important;
     }
 
-    body::before {
-      content: "";
-      position: fixed;
-      inset: -10px;
-      z-index: -2;
-      pointer-events: none;
-      background:
-        url("./assets/background.webp")
-        center center / cover
-        no-repeat;
-      filter:
-        blur(1.5px)
-        saturate(.88);
-      transform: scale(1.012);
-    }
-
-    body::after {
-      content: "";
+    .page-bg-slide {
       position: fixed;
       inset: 0;
-      z-index: -1;
+      z-index: -4;
       pointer-events: none;
-      background:
-        linear-gradient(
-          180deg,
-          rgba(4,5,7,.38) 0%,
-          rgba(4,5,7,var(--page-bg-dim)) 42%,
-          rgba(4,5,7,.66) 100%
-        );
+      background-position: center center;
+      background-size: cover;
+      background-repeat: no-repeat;
+      opacity: 0;
+      filter: none !important;
+      transform: none !important;
+      transition: opacity 620ms ease;
+      will-change: opacity;
     }
 
-    header {
-      background: rgba(10,11,13,.68);
-      border-bottom-color: rgba(255,255,255,.10);
-      backdrop-filter: blur(18px) saturate(120%);
-      -webkit-backdrop-filter: blur(18px) saturate(120%);
+    .page-bg-slide.is-visible {
+      opacity: 1;
     }
 
-    #welcome {
-      padding: 30px 34px;
-      border: 1px solid rgba(255,255,255,.10);
-      border-radius: 16px;
-      background: rgba(8,9,11,.48);
-      box-shadow: 0 18px 70px rgba(0,0,0,.24);
-      backdrop-filter: blur(14px) saturate(110%);
-      -webkit-backdrop-filter: blur(14px) saturate(110%);
+    .page-bg-dim {
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      pointer-events: none;
+      background: linear-gradient(
+        180deg,
+        rgba(4,5,7,.22) 0%,
+        rgba(4,5,7,.34) 45%,
+        rgba(4,5,7,.50) 100%
+      );
     }
 
-    #info {
-      margin-top: 10px;
-      padding: 12px 14px;
-      border: 1px solid rgba(255,255,255,.09);
-      border-radius: 10px;
-      background: rgba(8,9,11,.46);
-      backdrop-filter: blur(12px) saturate(110%);
-      -webkit-backdrop-filter: blur(12px) saturate(110%);
+    /* 背景图片本身不做 blur；浮层也不再使用 backdrop-filter。 */
+    header,
+    #welcome,
+    #info,
+    .gallery-head {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
     }
 
     @media (max-width: 700px) {
-      body::before {
-        background-position: center center;
-        filter:
-          blur(1px)
-          saturate(.86);
-      }
-
-      body::after {
-        background:
-          rgba(4,5,7,.58);
-      }
-
-      #welcome {
-        padding: 24px 18px;
-      }
-    }
-
-    @media (prefers-reduced-transparency: reduce) {
-      header,
-      #welcome,
-      #info {
-        backdrop-filter: none;
-        -webkit-backdrop-filter: none;
+      .page-bg-dim {
+        background: rgba(4,5,7,.38);
       }
     }
 
@@ -721,6 +689,9 @@
 </head>
 
 <body>
+  <div id="pageBgSlideA" class="page-bg-slide is-visible" aria-hidden="true"></div>
+  <div id="pageBgSlideB" class="page-bg-slide" aria-hidden="true"></div>
+  <div class="page-bg-dim" aria-hidden="true"></div>
 
 <!-- 仅用于浏览器显示端的实时锐化，不修改/转码 Google Drive 原视频。 -->
 <svg width="0" height="0" aria-hidden="true" focusable="false"
@@ -5661,5 +5632,71 @@ window.addEventListener(
 );
 </script>
 
+
+<script>
+(() => {
+  const backgrounds = ["./assets/backgrounds/bg01.jpg", "./assets/backgrounds/bg02.jpg", "./assets/backgrounds/bg03.jpg", "./assets/backgrounds/bg04.jpg", "./assets/backgrounds/bg05.jpg", "./assets/backgrounds/bg06.jpg", "./assets/backgrounds/bg07.jpg", "./assets/backgrounds/bg08.jpg", "./assets/backgrounds/bg09.jpg", "./assets/backgrounds/bg10.jpg", "./assets/backgrounds/bg11.jpg", "./assets/backgrounds/bg12.jpg", "./assets/backgrounds/bg13.jpg", "./assets/backgrounds/bg14.jpg", "./assets/backgrounds/bg15.jpg", "./assets/backgrounds/bg16.jpg", "./assets/backgrounds/bg17.jpg", "./assets/backgrounds/bg18.jpg", "./assets/backgrounds/bg19.jpg", "./assets/backgrounds/bg20.jpg", "./assets/backgrounds/bg21.jpg", "./assets/backgrounds/bg22.jpg"];
+  const intervalMs = 5000;
+  const a = document.getElementById("pageBgSlideA");
+  const b = document.getElementById("pageBgSlideB");
+
+  if (!a || !b || !backgrounds.length) return;
+
+  let index = 0;
+  let visible = a;
+  let hidden = b;
+  let timer = 0;
+  const loaded = new Set();
+
+  function preload(src) {
+    if (loaded.has(src)) return Promise.resolve();
+    return new Promise(resolve => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => { loaded.add(src); resolve(); };
+      img.onerror = () => resolve();
+      img.src = src;
+    });
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(showNext, intervalMs);
+  }
+
+  async function showNext() {
+    if (document.hidden) {
+      schedule();
+      return;
+    }
+
+    const nextIndex = (index + 1) % backgrounds.length;
+    const src = backgrounds[nextIndex];
+    await preload(src);
+
+    hidden.style.backgroundImage = `url("${src}")`;
+    hidden.classList.add("is-visible");
+    visible.classList.remove("is-visible");
+
+    const old = visible;
+    visible = hidden;
+    hidden = old;
+    index = nextIndex;
+
+    const afterNext = backgrounds[(index + 1) % backgrounds.length];
+    setTimeout(() => preload(afterNext), 900);
+    schedule();
+  }
+
+  a.style.backgroundImage = `url("${backgrounds[0]}")`;
+  loaded.add(backgrounds[0]);
+  preload(backgrounds[1 % backgrounds.length]);
+  schedule();
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) schedule();
+  });
+})();
+</script>
 </body>
 </html>
