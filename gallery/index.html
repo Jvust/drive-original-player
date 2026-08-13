@@ -2151,58 +2151,174 @@ function toggleZoom() {
 }
 
 /*
- * 参考 PhotoSwipe 的邻近 slide 预加载策略：
- * 默认优先加载移动方向前方 2 张、后方 1 张；开启省流量时只加载相邻 1 张。
- * Image 对象保留在 Map 中，让浏览器保持已下载/已解码资源。
+ * Gallery 原图热预加载：
+ * 默认沿当前浏览方向提前加载 5 张，反方向保留 1 张。
+ *
+ * 例如向右浏览：
+ * 当前图 -> +1 -> +2 -> +3 -> +4 -> +5
+ *
+ * 这样连续翻图时，后面 5 张都可以直接命中浏览器缓存/已解码 Image。
+ * 如果浏览器开启 Data Saver，则仍只预加载相邻 1 张，避免移动网络一次拉取大量原图。
  */
 function preloadOriginalAt(index) {
   if (!galleryFiles.length) return;
-  const normalized = (index + galleryFiles.length) % galleryFiles.length;
-  const file = galleryFiles[normalized];
-  if (!file || originalPreloadCache.has(file.id)) return;
 
-  const preload = new Image();
-  preload.decoding = "async";
-  preload.src = originalUrl(file);
-  originalPreloadCache.set(file.id, preload);
+  const normalized =
+    (index + galleryFiles.length) %
+    galleryFiles.length;
 
-  if (typeof preload.decode === "function") {
-    preload.decode().catch(() => {});
+  const file =
+    galleryFiles[normalized];
+
+  if (
+    !file ||
+    originalPreloadCache.has(file.id)
+  ) {
+    return;
   }
 
-  // 控制内存：只保留附近最多 6 张原图的预加载引用。
-  if (originalPreloadCache.size > 6) {
-    for (const [id] of originalPreloadCache) {
-      const keep = galleryFiles.some((item, i) => {
-        if (item.id !== id) return false;
-        const d = Math.min(
-          (i - currentIndex + galleryFiles.length) % galleryFiles.length,
-          (currentIndex - i + galleryFiles.length) % galleryFiles.length
+  const preload =
+    new Image();
+
+  preload.decoding =
+    "async";
+
+  preload.src =
+    originalUrl(file);
+
+  originalPreloadCache.set(
+    file.id,
+    preload
+  );
+
+  if (
+    typeof preload.decode ===
+    "function"
+  ) {
+    preload
+      .decode()
+      .catch(() => {});
+  }
+
+  /*
+   * 5 张前向 + 当前附近/反向 1 张，
+   * 缓存上限提高到 12，避免第 4、5 张刚预加载就被清掉。
+   */
+  if (
+    originalPreloadCache.size >
+    12
+  ) {
+    for (
+      const [id]
+      of originalPreloadCache
+    ) {
+      const keep =
+        galleryFiles.some(
+          (item, i) => {
+            if (
+              item.id !== id
+            ) {
+              return false;
+            }
+
+            const forward =
+              (
+                i -
+                currentIndex +
+                galleryFiles.length
+              ) %
+              galleryFiles.length;
+
+            const backward =
+              (
+                currentIndex -
+                i +
+                galleryFiles.length
+              ) %
+              galleryFiles.length;
+
+            /*
+             * 保留当前前后 5 张范围，
+             * 兼容用户突然反向翻图。
+             */
+            return (
+              forward <= 5 ||
+              backward <= 5
+            );
+          }
         );
-        return d <= 2;
-      });
+
       if (!keep) {
-        originalPreloadCache.delete(id);
-        if (originalPreloadCache.size <= 6) break;
+        originalPreloadCache.delete(
+          id
+        );
+
+        if (
+          originalPreloadCache.size <=
+          12
+        ) {
+          break;
+        }
       }
     }
   }
 }
 
-function preloadNeighbors(index, direction = 1) {
-  if (galleryFiles.length < 2) return;
+function preloadNeighbors(
+  index,
+  direction = 1
+) {
+  if (
+    galleryFiles.length < 2
+  ) {
+    return;
+  }
 
   const saveData = !!(
     navigator.connection &&
     navigator.connection.saveData
   );
 
-  preloadOriginalAt(index + direction);
-  preloadOriginalAt(index - direction);
+  /*
+   * 省流量模式：
+   * 仍只拉取当前浏览方向的下一张。
+   */
+  if (saveData) {
+    preloadOriginalAt(
+      index + direction
+    );
 
-  if (!saveData && galleryFiles.length > 2) {
-    preloadOriginalAt(index + direction * 2);
+    return;
   }
+
+  /*
+   * 正常模式：
+   * 当前浏览方向一次提前准备 5 张原图。
+   */
+  const maxAhead =
+    Math.min(
+      5,
+      galleryFiles.length - 1
+    );
+
+  for (
+    let step = 1;
+    step <= maxAhead;
+    step++
+  ) {
+    preloadOriginalAt(
+      index +
+      direction * step
+    );
+  }
+
+  /*
+   * 额外保留反方向 1 张，
+   * 方便用户临时返回上一张。
+   */
+  preloadOriginalAt(
+    index - direction
+  );
 }
 
 async function showViewerImage(index) {
