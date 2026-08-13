@@ -21,6 +21,25 @@
       object-fit: contain;
     }
 
+
+    /*
+     * 双播放器热备：
+     * 当前 <video id="player"> 正常显示；
+     * 另一个 <video id="preloadPlayer"> 在后台提前拿到 canplay。
+     */
+    .video-hot-standby {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      width: 2px !important;
+      height: 2px !important;
+      max-height: 2px !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+      z-index: -1 !important;
+    }
+
     #videoStage {
       position: relative;
       width: 100%;
@@ -850,6 +869,15 @@
         preload="auto"
         controlsList="nodownload nofullscreen noremoteplayback">
       </video>
+      <video
+        id="preloadPlayer"
+        class="video-hot-standby"
+        playsinline
+        muted
+        preload="auto"
+        controlsList="nodownload nofullscreen noremoteplayback"
+        aria-hidden="true">
+      </video>
       <canvas id="gpuCanvas" aria-label="WebGPU 视频画面"></canvas>
       <div id="seekHoldOverlay" aria-live="polite">
         <canvas id="seekHoldCanvas"></canvas>
@@ -968,6 +996,20 @@
   let videoPlaylistDomReady = false;
   let adjacentPrimeTimer = null;
   let switchGeneration = 0;
+
+  /*
+   * Hot Standby / 双播放器热备
+   *
+   * 只真正预加载“下一条”，避免同时下载多个视频抢当前带宽。
+   * 当前视频稳定后，preloadPlayer 会提前加载下一条到 canplay。
+   */
+  let hotStandbyIndex = -1;
+  let hotStandbyFileId = null;
+  let hotStandbyReady = false;
+  let hotStandbyLoading = false;
+  let hotStandbyGeneration = 0;
+  let hotStandbyRetryTimer = null;
+  let lastHotSwitchUsed = false;
 
   function detectSmoothDevice() {
     const ua = navigator.userAgent || "";
@@ -2468,6 +2510,22 @@ function buildDiagnosticText() {
       (gpuActive ? gpuColorSpace : "由浏览器原生视频决定"),
     "Seek Rescue：     " +
       getSeekRescueDiagnosticText(),
+    "视频热备：        " +
+      (
+        hotStandbyReady
+          ? "下一条已 canplay · 可热切"
+          : (
+              hotStandbyLoading
+                ? "正在预加载下一条"
+                : "待命"
+            )
+      ),
+    "最近切换：        " +
+      (
+        lastHotSwitchUsed
+          ? "Hot Standby 热切"
+          : "普通加载"
+      ),
     "WebGPU：          " +
       (gpuSupported() ? (gpuActive ? "已启用" : "可用") : "不支持"),
     gpuLastError
@@ -3243,6 +3301,664 @@ async function initServiceWorker() {
     });
   }
 
+
+  function getVideoMediaUrl(file) {
+    if (!file?.id) {
+      return "";
+    }
+
+    let url =
+      "./media/" +
+      encodeURIComponent(
+        file.id
+      );
+
+    if (file.resourceKey) {
+      url +=
+        "?resourceKey=" +
+        encodeURIComponent(
+          file.resourceKey
+        );
+    }
+
+    return url;
+  }
+
+  function resetHotStandbyState(
+    clearMedia = true
+  ) {
+    hotStandbyGeneration += 1;
+    hotStandbyIndex = -1;
+    hotStandbyFileId = null;
+    hotStandbyReady = false;
+    hotStandbyLoading = false;
+
+    if (hotStandbyRetryTimer) {
+      clearTimeout(
+        hotStandbyRetryTimer
+      );
+
+      hotStandbyRetryTimer =
+        null;
+    }
+
+    if (!clearMedia) {
+      return;
+    }
+
+    const standby =
+      document.getElementById(
+        "preloadPlayer"
+      );
+
+    if (standby) {
+      try {
+        standby.pause();
+        standby.removeAttribute(
+          "src"
+        );
+        standby.removeAttribute(
+          "poster"
+        );
+        standby.load();
+      } catch (_) {}
+    }
+  }
+
+  function currentVideoStableEnoughForHotPreload() {
+    const player =
+      document.getElementById(
+        "player"
+      );
+
+    if (!player) {
+      return false;
+    }
+
+    if (
+      player.seeking ||
+      seekRescueActivation ||
+      seekRescueSession
+    ) {
+      return false;
+    }
+
+    /*
+     * 不让热备抢一个本来就快断流的当前视频。
+     * 4 秒以上前向缓冲即可启动下一条预热。
+     */
+    if (
+      !player.paused &&
+      (
+        player.readyState < 3 ||
+        getBufferedAhead(player) < 4
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function scheduleHotStandbyRetry(
+    index,
+    delay = 1200
+  ) {
+    if (
+      hotStandbyRetryTimer
+    ) {
+      clearTimeout(
+        hotStandbyRetryTimer
+      );
+    }
+
+    hotStandbyRetryTimer =
+      setTimeout(
+        () => {
+          hotStandbyRetryTimer =
+            null;
+
+          prepareHotStandby(
+            index
+          );
+        },
+        delay
+      );
+  }
+
+  async function prepareHotStandby(
+    index =
+      currentVideoIndex + 1
+  ) {
+    const file =
+      videoPlaylist[index];
+
+    if (
+      !file ||
+      index === currentVideoIndex ||
+      !currentAccessToken ||
+      !serviceWorkerReady
+    ) {
+      return false;
+    }
+
+    if (
+      file.capabilities &&
+      file.capabilities.canDownload === false
+    ) {
+      return false;
+    }
+
+    if (
+      hotStandbyFileId === file.id &&
+      (
+        hotStandbyReady ||
+        hotStandbyLoading
+      )
+    ) {
+      return hotStandbyReady;
+    }
+
+    /*
+     * 当前视频还不稳定时，不硬抢带宽。
+     */
+    if (
+      !currentVideoStableEnoughForHotPreload()
+    ) {
+      scheduleHotStandbyRetry(
+        index,
+        1000
+      );
+
+      return false;
+    }
+
+    const standby =
+      document.getElementById(
+        "preloadPlayer"
+      );
+
+    if (!standby) {
+      return false;
+    }
+
+    const generation =
+      ++hotStandbyGeneration;
+
+    hotStandbyIndex =
+      index;
+
+    hotStandbyFileId =
+      file.id;
+
+    hotStandbyReady =
+      false;
+
+    hotStandbyLoading =
+      true;
+
+    try {
+      const registration =
+        await navigator
+          .serviceWorker
+          .ready;
+
+      const worker =
+        navigator
+          .serviceWorker
+          .controller ||
+        registration.active;
+
+      if (!worker) {
+        throw new Error(
+          "Service Worker 未准备完成"
+        );
+      }
+
+      /*
+       * 先把目标 fileId 的 Token/size 写进 SW，
+       * 随后隐藏 video 才开始真实媒体预加载。
+       */
+      await postWorkerMessage(
+        worker,
+        {
+          type:
+            "SET_TOKEN",
+          token:
+            currentAccessToken,
+          fileId:
+            file.id,
+          fileSize:
+            Number(
+              file.size
+            )
+        },
+        500
+      );
+
+      if (
+        generation !==
+          hotStandbyGeneration
+      ) {
+        return false;
+      }
+
+      const mediaUrl =
+        getVideoMediaUrl(file);
+
+      standby.pause();
+      standby.muted = true;
+      standby.volume = 0;
+      standby.playbackRate = 1;
+
+      if (file.thumbnailLink) {
+        standby.poster =
+          file.thumbnailLink;
+      } else {
+        standby.removeAttribute(
+          "poster"
+        );
+      }
+
+      standby.dataset.hotFileId =
+        file.id;
+
+      standby.dataset.hotIndex =
+        String(index);
+
+      standby.src =
+        mediaUrl;
+
+      standby.load();
+
+      /*
+       * canplay 才算真正热备完成。
+       * 此时不是只有 metadata，而是浏览器已经有能力开始播放。
+       */
+      const ready =
+        await new Promise(
+          resolve => {
+            let settled = false;
+
+            const finish =
+              value => {
+                if (settled) {
+                  return;
+                }
+
+                settled = true;
+
+                clearTimeout(
+                  timeout
+                );
+
+                standby.removeEventListener(
+                  "canplay",
+                  onCanPlay
+                );
+
+                standby.removeEventListener(
+                  "loadeddata",
+                  onLoadedData
+                );
+
+                standby.removeEventListener(
+                  "error",
+                  onError
+                );
+
+                resolve(value);
+              };
+
+            const onCanPlay =
+              () =>
+                finish(true);
+
+            const onLoadedData =
+              () => {
+                /*
+                 * 某些浏览器 canplay 发得比较慢。
+                 * HAVE_FUTURE_DATA 也足够用于热切。
+                 */
+                if (
+                  standby.readyState >=
+                    HTMLMediaElement
+                      .HAVE_FUTURE_DATA
+                ) {
+                  finish(true);
+                }
+              };
+
+            const onError =
+              () =>
+                finish(false);
+
+            standby.addEventListener(
+              "canplay",
+              onCanPlay,
+              { once: true }
+            );
+
+            standby.addEventListener(
+              "loadeddata",
+              onLoadedData
+            );
+
+            standby.addEventListener(
+              "error",
+              onError,
+              { once: true }
+            );
+
+            const timeout =
+              setTimeout(
+                () =>
+                  finish(
+                    standby.readyState >=
+                      HTMLMediaElement
+                        .HAVE_CURRENT_DATA
+                  ),
+                12000
+              );
+
+            if (
+              standby.readyState >=
+                HTMLMediaElement
+                  .HAVE_FUTURE_DATA
+            ) {
+              finish(true);
+            }
+          }
+        );
+
+      if (
+        generation !==
+          hotStandbyGeneration ||
+        hotStandbyFileId !==
+          file.id
+      ) {
+        return false;
+      }
+
+      hotStandbyReady =
+        !!ready;
+
+      hotStandbyLoading =
+        false;
+
+      if (hotStandbyReady) {
+        console.debug(
+          "下一条已热备：",
+          file.name,
+          "readyState=",
+          standby.readyState
+        );
+      }
+
+      return hotStandbyReady;
+    } catch (error) {
+      if (
+        generation ===
+          hotStandbyGeneration
+      ) {
+        hotStandbyReady =
+          false;
+
+        hotStandbyLoading =
+          false;
+      }
+
+      console.debug(
+        "下一条热备失败：",
+        error
+      );
+
+      return false;
+    }
+  }
+
+  function isHotStandbyUsable(
+    index
+  ) {
+    const file =
+      videoPlaylist[index];
+
+    const standby =
+      document.getElementById(
+        "preloadPlayer"
+      );
+
+    return !!(
+      file &&
+      standby &&
+      hotStandbyReady &&
+      hotStandbyIndex ===
+        index &&
+      hotStandbyFileId ===
+        file.id &&
+      standby.dataset.hotFileId ===
+        file.id &&
+      standby.readyState >=
+        HTMLMediaElement
+          .HAVE_CURRENT_DATA
+    );
+  }
+
+  async function promoteHotStandby(
+    index,
+    autoplay = true
+  ) {
+    if (
+      !isHotStandbyUsable(
+        index
+      )
+    ) {
+      return false;
+    }
+
+    const file =
+      videoPlaylist[index];
+
+    const oldPlayer =
+      document.getElementById(
+        "player"
+      );
+
+    const standby =
+      document.getElementById(
+        "preloadPlayer"
+      );
+
+    if (
+      !file ||
+      !oldPlayer ||
+      !standby
+    ) {
+      return false;
+    }
+
+    /*
+     * GPU requestVideoFrameCallback 目前绑定在旧 active video 上。
+     * 先取消，再交换 DOM id，最后重新绑定新 active video。
+     */
+    const gpuWasActive =
+      gpuActive;
+
+    if (gpuWasActive) {
+      cancelGpuFrames();
+    }
+
+    const oldVolume =
+      oldPlayer.volume;
+
+    const oldMuted =
+      oldPlayer.muted;
+
+    const oldRate =
+      oldPlayer.playbackRate;
+
+    try {
+      oldPlayer.pause();
+    } catch (_) {}
+
+    /*
+     * 安全交换 id：
+     * standby -> player
+     * old active -> preloadPlayer
+     */
+    standby.id =
+      "playerHotPromoting";
+
+    oldPlayer.id =
+      "preloadPlayer";
+
+    standby.id =
+      "player";
+
+    standby.classList.remove(
+      "video-hot-standby"
+    );
+
+    standby.removeAttribute(
+      "aria-hidden"
+    );
+
+    oldPlayer.classList.add(
+      "video-hot-standby"
+    );
+
+    oldPlayer.setAttribute(
+      "aria-hidden",
+      "true"
+    );
+
+    standby.volume =
+      oldVolume;
+
+    standby.muted =
+      oldMuted;
+
+    standby.playbackRate =
+      oldRate;
+
+    /*
+     * 新 active video 要继承当前 GPU / controls 状态。
+     */
+    initGpuMediaControls();
+    bindVideoPlayerEvents(
+      standby
+    );
+
+    setGpuUiActive(
+      gpuWasActive
+    );
+
+    currentVideoIndex =
+      index;
+
+    currentFileId =
+      file.id;
+
+    currentResourceKey =
+      file.resourceKey ||
+      null;
+
+    currentFileSize =
+      Number(
+        file.size
+      );
+
+    ensureVideoPathExpanded(
+      videoTreeRoot,
+      file.id
+    );
+
+    updateVideoInfo(file);
+
+    if (
+      videoPlaylistDomReady
+    ) {
+      syncVideoPlaylistDomState();
+    }
+
+    /*
+     * 旧播放器现在变成下一次热备槽位。
+     * 清空它不会影响已经顶上来的新播放器。
+     */
+    try {
+      oldPlayer.removeAttribute(
+        "src"
+      );
+
+      oldPlayer.removeAttribute(
+        "poster"
+      );
+
+      oldPlayer.muted = true;
+      oldPlayer.volume = 0;
+      oldPlayer.load();
+    } catch (_) {}
+
+    hotStandbyReady =
+      false;
+
+    hotStandbyLoading =
+      false;
+
+    hotStandbyIndex =
+      -1;
+
+    hotStandbyFileId =
+      null;
+
+    lastHotSwitchUsed =
+      true;
+
+    applySharpenMode();
+
+    if (gpuWasActive) {
+      syncGpuCanvasSize();
+      renderGpuFrame();
+      scheduleGpuFrames();
+    }
+
+    if (autoplay) {
+      try {
+        const promise =
+          standby.play();
+
+        promise?.catch?.(
+          error =>
+            console.debug(
+              "热切后播放等待用户手势：",
+              error
+            )
+        );
+      } catch (_) {}
+    }
+
+    setStatus(
+      sharpenMode === 0
+        ? "Original · 流畅模式（热切）"
+        : "Original · 已热切下一条"
+    );
+
+    showWatchUi();
+
+    /*
+     * 新视频顶上来后，再准备它的下一条。
+     */
+    setTimeout(
+      () =>
+        prepareHotStandby(
+          currentVideoIndex + 1
+        ),
+      650
+    );
+
+    return true;
+  }
+
   function scheduleAdjacentVideoPrime() {
     if (adjacentPrimeTimer) {
       clearTimeout(
@@ -3269,6 +3985,36 @@ async function initServiceWorker() {
       return;
     }
 
+    /*
+     * 真正“秒切”的关键：
+     * 用隐藏第二个 <video> 真实预加载下一条，
+     * 而不是只预取几个 MB。
+     */
+    const nextIndex =
+      currentVideoIndex + 1;
+
+    if (
+      nextIndex >= 0 &&
+      nextIndex <
+        videoPlaylist.length
+    ) {
+      prepareHotStandby(
+        nextIndex
+      );
+    }
+
+    /*
+     * 上一条只做轻量 SW prime，
+     * 不再同时养第二个真实 video，
+     * 避免双向预加载抢当前视频带宽。
+     */
+    if (
+      smoothDeviceMode ||
+      currentVideoIndex <= 0
+    ) {
+      return;
+    }
+
     let worker = null;
 
     try {
@@ -3278,61 +4024,41 @@ async function initServiceWorker() {
           .ready;
 
       worker =
-        navigator.serviceWorker.controller ||
+        navigator
+          .serviceWorker
+          .controller ||
         registration.active;
     } catch (_) {
       return;
     }
 
-    if (!worker) return;
-
-    const candidates = [];
-
-    const nextIndex =
-      currentVideoIndex + 1;
-
-    if (
-      nextIndex >= 0 &&
-      nextIndex <
-        videoPlaylist.length
-    ) {
-      candidates.push(
-        videoPlaylist[nextIndex]
-      );
+    if (!worker) {
+      return;
     }
 
-    if (!smoothDeviceMode) {
-      const previousIndex =
-        currentVideoIndex - 1;
+    const previous =
+      videoPlaylist[
+        currentVideoIndex - 1
+      ];
 
-      if (previousIndex >= 0) {
-        candidates.push(
-          videoPlaylist[
-            previousIndex
-          ]
-        );
-      }
+    if (!previous?.id) {
+      return;
     }
 
-    for (
-      const file of candidates
-    ) {
-      if (!file?.id) continue;
-
-      worker.postMessage({
-        type: "PRIME_MEDIA",
-        token:
-          currentAccessToken,
-        fileId:
-          file.id,
-        fileSize:
-          Number(file.size),
-        resourceKey:
-          file.resourceKey || null
-      });
-    }
+    worker.postMessage({
+      type:
+        "PRIME_MEDIA",
+      token:
+        currentAccessToken,
+      fileId:
+        previous.id,
+      fileSize:
+        Number(previous.size),
+      resourceKey:
+        previous.resourceKey ||
+        null
+    });
   }
-
 
   function shuffleBackgroundFiles(files) {
     const copy = files.slice();
@@ -4205,6 +4931,28 @@ async function initServiceWorker() {
     const file = videoPlaylist[index];
     if (!file) return;
 
+    /*
+     * 如果目标就是已经 canplay 的隐藏热备 video，
+     * 直接 DOM 槽位互换，不重新建立网络/解码链。
+     */
+    if (
+      index !== currentVideoIndex &&
+      isHotStandbyUsable(index)
+    ) {
+      const promoted =
+        await promoteHotStandby(
+          index,
+          autoplay
+        );
+
+      if (promoted) {
+        return;
+      }
+    }
+
+    lastHotSwitchUsed =
+      false;
+
     const generation =
       ++switchGeneration;
 
@@ -4212,6 +4960,18 @@ async function initServiceWorker() {
      * 切换到另一条视频前销毁旧 MSE Rescue。
      */
     destroySeekRescue();
+
+    /*
+     * 如果用户点的不是当前热备目标，
+     * 旧热备立即失效，避免后台继续下载无关视频。
+     */
+    if (
+      hotStandbyIndex !== index
+    ) {
+      resetHotStandbyState(
+        true
+      );
+    }
 
     currentVideoIndex = index;
     currentFileId = file.id;
@@ -4248,10 +5008,10 @@ async function initServiceWorker() {
       return;
     }
 
-    let mediaUrl = "./media/" + encodeURIComponent(file.id);
-    if (currentResourceKey) {
-      mediaUrl += "?resourceKey=" + encodeURIComponent(currentResourceKey);
-    }
+    const mediaUrl =
+      getVideoMediaUrl(
+        file
+      );
 
     const player = document.getElementById("player");
     if (sharpenMode === 0 && gpuActive) {
@@ -4358,93 +5118,216 @@ async function initServiceWorker() {
     }, 5000);
   }
 
-  function initVideoPlayerEventsOnce() {
-    if (videoPlayerEventsReady) return;
-    videoPlayerEventsReady = true;
+  function bindVideoPlayerEvents(player) {
+    if (
+      !player ||
+      player.dataset
+        .mainPlayerEventsReady ===
+        "1"
+    ) {
+      return;
+    }
 
-    const player = document.getElementById("player");
-    initGpuMediaControls();
-    initFullscreenAutoHide();
-    startGpuHealthMonitor();
+    player.dataset
+      .mainPlayerEventsReady =
+        "1";
 
-    player.addEventListener("loadedmetadata", () => {
-      syncGpuCanvasSize();
-      syncGpuMediaControls();
-      updateDiagnostic();
-    });
-
-    player.addEventListener("loadeddata", async () => {
-      if (
-        sharpenMode !== 0 &&
-        !gpuActive &&
-        !gpuInitializing
-      ) {
-        await enableWebGPUEnhancement();
-        applySharpenMode();
-      } else if (sharpenMode === 0) {
-        setGpuUiActive(false);
-        applySharpenMode();
-        setStatus(
-          "Original · 流畅模式（手动）"
+    const isActivePlayer =
+      () =>
+        player ===
+        document.getElementById(
+          "player"
         );
-      }
 
-      syncGpuCanvasSize();
-      renderGpuFrame();
-      updateDiagnostic();
-
-      scheduleAdjacentVideoPrime();
-    });
-
-    player.addEventListener("resize", () => {
-      syncGpuCanvasSize();
-      renderGpuFrame();
-      updateDiagnostic();
-    });
-
-    player.addEventListener("timeupdate", () => {
-      if (diagnosticOpen) updateDiagnostic();
-    });
-
-    player.addEventListener("play", showWatchUi);
-    player.addEventListener("pause", showWatchUi);
-
-    /*
-     * Seek Rescue 监听所有进度条来源：
-     * - 浏览器原生 controls
-     * - GPU 自定义 seek slider
-     * - 键盘跳转
-     */
     player.addEventListener(
-      "seeking",
-      handlePlayerSeekingForRescue
+      "loadedmetadata",
+      () => {
+        if (!isActivePlayer()) {
+          return;
+        }
+
+        syncGpuCanvasSize();
+        syncGpuMediaControls();
+        updateDiagnostic();
+      }
+    );
+
+    player.addEventListener(
+      "loadeddata",
+      async () => {
+        if (!isActivePlayer()) {
+          return;
+        }
+
+        if (
+          sharpenMode !== 0 &&
+          !gpuActive &&
+          !gpuInitializing
+        ) {
+          await enableWebGPUEnhancement();
+          applySharpenMode();
+        } else if (
+          sharpenMode === 0
+        ) {
+          setGpuUiActive(false);
+          applySharpenMode();
+
+          setStatus(
+            "Original · 流畅模式（手动）"
+          );
+        }
+
+        syncGpuCanvasSize();
+        renderGpuFrame();
+        updateDiagnostic();
+
+        scheduleAdjacentVideoPrime();
+      }
+    );
+
+    player.addEventListener(
+      "resize",
+      () => {
+        if (!isActivePlayer()) {
+          return;
+        }
+
+        syncGpuCanvasSize();
+        renderGpuFrame();
+        updateDiagnostic();
+      }
     );
 
     player.addEventListener(
       "timeupdate",
-      handlePlayerProgressForRescue
+      () => {
+        if (
+          isActivePlayer() &&
+          diagnosticOpen
+        ) {
+          updateDiagnostic();
+        }
+      }
+    );
+
+    player.addEventListener(
+      "play",
+      () => {
+        if (isActivePlayer()) {
+          showWatchUi();
+        }
+      }
+    );
+
+    player.addEventListener(
+      "pause",
+      () => {
+        if (isActivePlayer()) {
+          showWatchUi();
+        }
+      }
+    );
+
+    player.addEventListener(
+      "seeking",
+      () => {
+        if (isActivePlayer()) {
+          handlePlayerSeekingForRescue();
+        }
+      }
+    );
+
+    player.addEventListener(
+      "timeupdate",
+      () => {
+        if (isActivePlayer()) {
+          handlePlayerProgressForRescue();
+        }
+      }
     );
 
     player.addEventListener(
       "playing",
-      handlePlayerProgressForRescue
-    );
-
-    player.addEventListener("ended", async () => {
-      if (videoPlaylist.length > 1) {
-        const next = currentVideoIndex + 1;
-        if (next < videoPlaylist.length) {
-          await switchVideoByIndex(next, true);
+      () => {
+        if (isActivePlayer()) {
+          handlePlayerProgressForRescue();
         }
       }
-    });
+    );
 
-    player.addEventListener("error", () => {
-      showError(
-        "视频文件已经成功读取，但浏览器无法解码这个视频。\\n\\n" +
-        "最兼容的是：MP4 + H.264/AVC + AAC。"
+    player.addEventListener(
+      "ended",
+      async () => {
+        if (!isActivePlayer()) {
+          return;
+        }
+
+        if (
+          videoPlaylist.length >
+            1
+        ) {
+          const next =
+            currentVideoIndex + 1;
+
+          if (
+            next <
+            videoPlaylist.length
+          ) {
+            await switchVideoByIndex(
+              next,
+              true
+            );
+          }
+        }
+      }
+    );
+
+    player.addEventListener(
+      "error",
+      () => {
+        if (!isActivePlayer()) {
+          return;
+        }
+
+        showError(
+          "视频文件已经成功读取，但浏览器无法解码这个视频。\\n\\n" +
+          "最兼容的是：MP4 + H.264/AVC + AAC。"
+        );
+      }
+    );
+  }
+
+  function initVideoPlayerEventsOnce() {
+    if (
+      videoPlayerEventsReady
+    ) {
+      return;
+    }
+
+    videoPlayerEventsReady =
+      true;
+
+    const player =
+      document.getElementById(
+        "player"
       );
-    });
+
+    const standby =
+      document.getElementById(
+        "preloadPlayer"
+      );
+
+    initGpuMediaControls();
+    initFullscreenAutoHide();
+    startGpuHealthMonitor();
+
+    bindVideoPlayerEvents(
+      player
+    );
+
+    bindVideoPlayerEvents(
+      standby
+    );
   }
 
 
