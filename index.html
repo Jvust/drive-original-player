@@ -2778,15 +2778,15 @@ async function initServiceWorker() {
    * 总数只有在扫描队列归零后才真正确定。
    */
   const DRIVE_TREE_CACHE_NAME =
-    "drive-original-player-tree-cache-v3";
+    "drive-original-player-tree-cache-v4";
 
   const DRIVE_TREE_CACHE_VERSION =
-    3;
+    4;
 
   function driveTreeCacheRequest(rootId) {
     return new Request(
       location.origin +
-      "/__drive_original_player_tree_cache__/v3/" +
+      "/__drive_original_player_tree_cache__/v4/" +
       encodeURIComponent(rootId),
       { method: "GET" }
     );
@@ -3162,6 +3162,249 @@ async function initServiceWorker() {
     return matched || firstParent;
   }
 
+  function sleepDriveTree(ms) {
+    return new Promise(
+      resolve =>
+        setTimeout(resolve, ms)
+    );
+  }
+
+  function getDriveTreeErrorMessage(
+    text,
+    fallback = ""
+  ) {
+    if (!text) return fallback;
+
+    try {
+      const data =
+        JSON.parse(text);
+
+      return (
+        data?.error?.message ||
+        data?.error?.errors?.[0]?.message ||
+        fallback
+      );
+    } catch (_) {
+      return (
+        text
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300) ||
+        fallback
+      );
+    }
+  }
+
+  function isDriveTreeRetryable(
+    status,
+    bodyText
+  ) {
+    if (
+      status === 408 ||
+      status === 429 ||
+      status === 500 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504
+    ) {
+      return true;
+    }
+
+    if (status === 403) {
+      return /rateLimitExceeded|userRateLimitExceeded|backendError|sharingRateLimitExceeded/i
+        .test(bodyText || "");
+    }
+
+    return false;
+  }
+
+  async function fetchDriveTreePage(
+    url,
+    folderFile,
+    accessToken
+  ) {
+    const MAX_ATTEMPTS = 5;
+    let token =
+      accessToken ||
+      currentAccessToken;
+
+    let lastError = null;
+
+    for (
+      let attempt = 0;
+      attempt < MAX_ATTEMPTS;
+      attempt++
+    ) {
+      const headers = {
+        "Authorization":
+          "Bearer " + token
+      };
+
+      /*
+       * 某些通过链接共享的目录要求 resource key。
+       */
+      if (
+        folderFile?.resourceKey
+      ) {
+        headers[
+          "X-Goog-Drive-Resource-Keys"
+        ] =
+          folderFile.id +
+          "/" +
+          folderFile.resourceKey;
+      }
+
+      try {
+        const response =
+          await fetch(
+            url,
+            {
+              headers,
+              cache: "no-store"
+            }
+          );
+
+        if (response.ok) {
+          return response;
+        }
+
+        const bodyText =
+          await response
+            .text()
+            .catch(() => "");
+
+        /*
+         * 长时间后台扫描时 Access Token 可能过期。
+         * 401 时直接从 OAuth bridge 换一枚新 Token，
+         * 不让整个文件树失败。
+         */
+        if (
+          response.status === 401 &&
+          attempt <
+            MAX_ATTEMPTS - 1
+        ) {
+          const freshToken =
+            await getBridgeAccessToken();
+
+          if (freshToken) {
+            token = freshToken;
+            currentAccessToken =
+              freshToken;
+
+            continue;
+          }
+        }
+
+        const message =
+          getDriveTreeErrorMessage(
+            bodyText,
+            "HTTP " +
+              response.status
+          );
+
+        lastError =
+          new Error(
+            "读取目录失败：" +
+            (folderFile?.name ||
+              folderFile?.id ||
+              "Unknown Folder") +
+            " · HTTP " +
+            response.status +
+            " · " +
+            message
+          );
+
+        lastError.status =
+          response.status;
+
+        /*
+         * 429 / 5xx / 配额型 403：
+         * 指数退避 + 抖动，最多 5 次。
+         */
+        if (
+          isDriveTreeRetryable(
+            response.status,
+            bodyText
+          ) &&
+          attempt <
+            MAX_ATTEMPTS - 1
+        ) {
+          const retryAfter =
+            Number(
+              response.headers.get(
+                "Retry-After"
+              )
+            );
+
+          const waitMs =
+            Number.isFinite(
+              retryAfter
+            ) &&
+            retryAfter > 0
+              ? retryAfter * 1000
+              : Math.min(
+                  8000,
+                  600 *
+                    Math.pow(
+                      2,
+                      attempt
+                    ) +
+                    Math.floor(
+                      Math.random() *
+                      350
+                    )
+                );
+
+          await sleepDriveTree(
+            waitMs
+          );
+
+          continue;
+        }
+
+        throw lastError;
+      } catch (error) {
+        lastError = error;
+
+        /*
+         * fetch 网络错误没有 HTTP status，
+         * 同样做有限次数重试。
+         */
+        if (
+          !error?.status &&
+          attempt <
+            MAX_ATTEMPTS - 1
+        ) {
+          await sleepDriveTree(
+            Math.min(
+              8000,
+              600 *
+                Math.pow(
+                  2,
+                  attempt
+                ) +
+                Math.floor(
+                  Math.random() *
+                  350
+                )
+            )
+          );
+
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw (
+      lastError ||
+      new Error(
+        "Drive 目录请求失败"
+      )
+    );
+  }
+
   async function listVideoTreeChildren(folderFile, accessToken) {
     const allItems = [];
     let pageToken = null;
@@ -3195,42 +3438,48 @@ async function initServiceWorker() {
       });
 
       if (folderFile.driveId) {
-        params.set("corpora", "drive");
-        params.set("driveId", folderFile.driveId);
+        params.set(
+          "corpora",
+          "drive"
+        );
+        params.set(
+          "driveId",
+          folderFile.driveId
+        );
       } else {
-        params.set("corpora", "user");
-      }
-
-      if (pageToken) {
-        params.set("pageToken", pageToken);
-      }
-
-      const response = await fetch(
-        "https://www.googleapis.com/drive/v3/files?" +
-          params.toString(),
-        {
-          headers: {
-            "Authorization": "Bearer " + accessToken
-          },
-          cache: "no-store"
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          "读取文件夹内容失败：" +
-          folderFile.name +
-          " · HTTP " +
-          response.status
+        params.set(
+          "corpora",
+          "user"
         );
       }
 
-      const data = await response.json();
+      if (pageToken) {
+        params.set(
+          "pageToken",
+          pageToken
+        );
+      }
 
-      for (const file of data.files || []) {
+      const response =
+        await fetchDriveTreePage(
+          "https://www.googleapis.com/drive/v3/files?" +
+            params.toString(),
+          folderFile,
+          accessToken
+        );
+
+      const data =
+        await response.json();
+
+      for (
+        const file
+        of data.files || []
+      ) {
         file.resourceKey =
           file.resourceKey ||
-          fileResourceKey(file.id) ||
+          fileResourceKey(
+            file.id
+          ) ||
           null;
 
         if (
@@ -3242,7 +3491,9 @@ async function initServiceWorker() {
         }
       }
 
-      pageToken = data.nextPageToken || null;
+      pageToken =
+        data.nextPageToken ||
+        null;
     } while (pageToken);
 
     const collator =
@@ -3255,11 +3506,24 @@ async function initServiceWorker() {
       );
 
     allItems.sort((a, b) => {
-      const aFolder = isDriveFolder(a) ? 0 : 1;
-      const bFolder = isDriveFolder(b) ? 0 : 1;
+      const aFolder =
+        isDriveFolder(a)
+          ? 0
+          : 1;
 
-      if (aFolder !== bFolder) {
-        return aFolder - bFolder;
+      const bFolder =
+        isDriveFolder(b)
+          ? 0
+          : 1;
+
+      if (
+        aFolder !==
+        bFolder
+      ) {
+        return (
+          aFolder -
+          bFolder
+        );
       }
 
       return collator.compare(
@@ -3271,10 +3535,7 @@ async function initServiceWorker() {
     return allItems;
   }
 
-  /*
-   * 递归建立 1433223 下的文件树。
-   * 一次并发读取最多 4 个文件夹，兼顾速度和 Drive API 压力。
-   */
+
   async function buildVideoFolderTree(
     rootFolder,
     accessToken,
@@ -3294,6 +3555,14 @@ async function initServiceWorker() {
             _scanned: false
           };
 
+    if (
+      !Array.isArray(
+        rootNode._scanErrors
+      )
+    ) {
+      rootNode._scanErrors = [];
+    }
+
     const queue =
       collectUnscannedFolderNodes(
         rootNode
@@ -3307,11 +3576,11 @@ async function initServiceWorker() {
     }
 
     /*
-     * 不再把“已发现数量”当成总数。
-     * 队列为空时才代表真正扫描完成。
+     * 后台扫描不阻塞视频，因此优先稳定性。
+     * 4 并发比 V8 的 8 并发更不容易触发 Drive 限流。
      */
     const MAX_FOLDERS = 20000;
-    const CONCURRENCY = 8;
+    const CONCURRENCY = 4;
 
     while (queue.length) {
       const batch =
@@ -3320,64 +3589,128 @@ async function initServiceWorker() {
           CONCURRENCY
         );
 
-      await Promise.all(
-        batch.map(async node => {
-          const items =
-            await listVideoTreeChildren(
-              node.file,
-              accessToken
+      const results =
+        await Promise.allSettled(
+          batch.map(async node => {
+            const items =
+              await listVideoTreeChildren(
+                node.file,
+                currentAccessToken ||
+                  accessToken
+              );
+
+            node.children =
+              items.map(file => ({
+                file,
+                children: [],
+                _scanned:
+                  !isDriveFolder(
+                    file
+                  )
+              }));
+
+            node._scanned = true;
+            node._scanFailed = false;
+            delete node._scanError;
+
+            for (
+              const child
+              of node.children
+            ) {
+              if (
+                isDriveFolder(
+                  child.file
+                )
+              ) {
+                queue.push(
+                  child
+                );
+              }
+            }
+
+            return node;
+          })
+        );
+
+      /*
+       * 关键修复：
+       * 一个目录失败不再终止整棵树。
+       * fetchDriveTreePage 已经做过最多 5 次重试；
+       * 仍失败就把这个目录标记为“暂不可读”并继续其他目录。
+       */
+      results.forEach(
+        (result, index) => {
+          if (
+            result.status ===
+            "fulfilled"
+          ) {
+            return;
+          }
+
+          const node =
+            batch[index];
+
+          const message =
+            result.reason?.message ||
+            String(
+              result.reason ||
+              "Unknown error"
             );
 
-          node.children =
-            items.map(file => ({
-              file,
-              children: [],
-              _scanned:
-                !isDriveFolder(
-                  file
-                )
-            }));
-
           node._scanned = true;
+          node._scanFailed = true;
+          node._scanError =
+            message;
 
-          for (
-            const child
-            of node.children
-          ) {
-            if (
-              isDriveFolder(
-                child.file
-              )
-            ) {
-              queue.push(
-                child
-              );
-            }
-          }
-
+          /*
+           * 不覆盖已有 children：
+           * 如果这是从部分缓存恢复，至少保留旧的可用内容。
+           */
           if (
-            typeof onProgress ===
-            "function"
+            !Array.isArray(
+              node.children
+            )
           ) {
-            onProgress({
-              scanned:
-                countScannedFolders(
-                  rootNode
-                ),
-              discovered:
-                countKnownFolders(
-                  rootNode
-                ),
-              pending:
-                queue.length
-            });
+            node.children = [];
           }
-        })
+
+          rootNode._scanErrors.push({
+            id:
+              node.file?.id ||
+              "",
+            name:
+              node.file?.name ||
+              "Unknown Folder",
+            message,
+            at:
+              Date.now()
+          });
+
+          /*
+           * 防止超大错误日志把 Cache Storage 撑大。
+           */
+          if (
+            rootNode
+              ._scanErrors
+              .length > 100
+          ) {
+            rootNode
+              ._scanErrors =
+                rootNode
+                  ._scanErrors
+                  .slice(-100);
+          }
+
+          console.warn(
+            "跳过暂不可读目录：",
+            node.file?.name,
+            result.reason
+          );
+        }
       );
 
       /*
-       * 每一批都 checkpoint。
-       * 第一次扫描过程中关闭网页，下次继续未扫描节点。
+       * 每批持续 checkpoint。
        */
       await saveDriveTreeCache(
         rootFolder.id,
@@ -3385,10 +3718,35 @@ async function initServiceWorker() {
         false
       );
 
-      if (
+      const discovered =
         countKnownFolders(
           rootNode
-        ) > MAX_FOLDERS
+        );
+
+      const scanned =
+        countScannedFolders(
+          rootNode
+        );
+
+      if (
+        typeof onProgress ===
+        "function"
+      ) {
+        onProgress({
+          scanned,
+          discovered,
+          pending:
+            queue.length,
+          failed:
+            rootNode
+              ._scanErrors
+              .length
+        });
+      }
+
+      if (
+        discovered >
+        MAX_FOLDERS
       ) {
         throw new Error(
           "已发现超过 " +
@@ -3397,18 +3755,14 @@ async function initServiceWorker() {
         );
       }
 
-      /*
-       * 给主线程喘息，避免超大目录树持续占用 UI。
-       */
-      await new Promise(
-        resolve =>
-          setTimeout(
-            resolve,
-            0
-          )
-      );
+      await sleepDriveTree(0);
     }
 
+    /*
+     * “complete” 表示扫描队列已经走完。
+     * 即使有个别权限不足目录，也不会让以后每次启动重新扫整棵树。
+     * 用户可用“刷新列表”再次尝试这些目录。
+     */
     await saveDriveTreeCache(
       rootFolder.id,
       rootNode,
@@ -5071,6 +5425,12 @@ async function initServiceWorker() {
               progress.discovered +
               " · 待扫描 " +
               progress.pending +
+              (
+                progress.failed
+                  ? " · 暂不可读 " +
+                    progress.failed
+                  : ""
+              ) +
               " · 视频可继续播放"
             );
           }
@@ -5081,10 +5441,24 @@ async function initServiceWorker() {
         openedFile
       );
 
+      const failedCount =
+        Array.isArray(
+          tree._scanErrors
+        )
+          ? tree._scanErrors.length
+          : 0;
+
       setStatus(
         "Original · 1433223 扫描完成 · 共 " +
         countKnownFolders(tree) +
-        " 个文件夹"
+        " 个文件夹" +
+        (
+          failedCount
+            ? " · " +
+              failedCount +
+              " 个目录暂不可读"
+            : ""
+        )
       );
     } catch (error) {
       console.warn(
@@ -5093,7 +5467,11 @@ async function initServiceWorker() {
       );
 
       setStatus(
-        "Original · 视频可播放 · 文件树后台扫描失败"
+        "Original · 视频可播放 · 文件树后台扫描失败 · " +
+        (
+          error?.message ||
+          "未知错误"
+        )
       );
     }
   }

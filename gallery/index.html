@@ -779,12 +779,12 @@ async function findGalleryRootFolder(openedFile) {
 /* ================================================================
  * Persistent 1433223 Tree Cache · shared with video page
  * ================================================================ */
-const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v3";
-const DRIVE_TREE_CACHE_VERSION = 3;
+const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v4";
+const DRIVE_TREE_CACHE_VERSION = 4;
 
 function driveTreeCacheRequest(rootId) {
   return new Request(
-    location.origin + "/__drive_original_player_tree_cache__/v3/" + encodeURIComponent(rootId),
+    location.origin + "/__drive_original_player_tree_cache__/v4/" + encodeURIComponent(rootId),
     { method: "GET" }
   );
 }
@@ -862,6 +862,235 @@ function countDriveTreeFolders(rootNode) {
   return count;
 }
 
+function sleepDriveTree(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(resolve, ms)
+  );
+}
+
+function getDriveTreeErrorMessage(
+  text,
+  fallback = ""
+) {
+  if (!text) return fallback;
+
+  try {
+    const data =
+      JSON.parse(text);
+
+    return (
+      data?.error?.message ||
+      data?.error?.errors?.[0]?.message ||
+      fallback
+    );
+  } catch (_) {
+    return (
+      text
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300) ||
+      fallback
+    );
+  }
+}
+
+function isDriveTreeRetryable(
+  status,
+  bodyText
+) {
+  if (
+    status === 408 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  ) {
+    return true;
+  }
+
+  if (status === 403) {
+    return /rateLimitExceeded|userRateLimitExceeded|backendError|sharingRateLimitExceeded/i
+      .test(bodyText || "");
+  }
+
+  return false;
+}
+
+async function fetchGalleryTreePage(
+  url,
+  folderFile
+) {
+  const MAX_ATTEMPTS = 5;
+  let token =
+    currentAccessToken;
+
+  let lastError = null;
+
+  for (
+    let attempt = 0;
+    attempt < MAX_ATTEMPTS;
+    attempt++
+  ) {
+    const headers = {
+      "Authorization":
+        "Bearer " + token
+    };
+
+    if (
+      folderFile?.resourceKey
+    ) {
+      headers[
+        "X-Goog-Drive-Resource-Keys"
+      ] =
+        folderFile.id +
+        "/" +
+        folderFile.resourceKey;
+    }
+
+    try {
+      const response =
+        await fetch(
+          url,
+          {
+            headers,
+            cache: "no-store"
+          }
+        );
+
+      if (response.ok) {
+        return response;
+      }
+
+      const bodyText =
+        await response
+          .text()
+          .catch(() => "");
+
+      if (
+        response.status === 401 &&
+        attempt <
+          MAX_ATTEMPTS - 1
+      ) {
+        const freshToken =
+          await getBridgeAccessToken();
+
+        if (freshToken) {
+          token = freshToken;
+          currentAccessToken =
+            freshToken;
+
+          await sendTokenToWorker(
+            freshToken
+          ).catch(() => {});
+
+          continue;
+        }
+      }
+
+      const message =
+        getDriveTreeErrorMessage(
+          bodyText,
+          "HTTP " +
+            response.status
+        );
+
+      lastError =
+        new Error(
+          "读取目录失败：" +
+          (folderFile?.name ||
+            folderFile?.id ||
+            "Unknown Folder") +
+          " · HTTP " +
+          response.status +
+          " · " +
+          message
+        );
+
+      lastError.status =
+        response.status;
+
+      if (
+        isDriveTreeRetryable(
+          response.status,
+          bodyText
+        ) &&
+        attempt <
+          MAX_ATTEMPTS - 1
+      ) {
+        const retryAfter =
+          Number(
+            response.headers.get(
+              "Retry-After"
+            )
+          );
+
+        const waitMs =
+          Number.isFinite(
+            retryAfter
+          ) &&
+          retryAfter > 0
+            ? retryAfter * 1000
+            : Math.min(
+                8000,
+                600 *
+                  Math.pow(
+                    2,
+                    attempt
+                  ) +
+                  Math.floor(
+                    Math.random() *
+                    350
+                  )
+              );
+
+        await sleepDriveTree(
+          waitMs
+        );
+
+        continue;
+      }
+
+      throw lastError;
+    } catch (error) {
+      lastError = error;
+
+      if (
+        !error?.status &&
+        attempt <
+          MAX_ATTEMPTS - 1
+      ) {
+        await sleepDriveTree(
+          Math.min(
+            8000,
+            600 *
+              Math.pow(
+                2,
+                attempt
+              ) +
+              Math.floor(
+                Math.random() *
+                350
+              )
+          )
+        );
+
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error(
+      "Drive 目录请求失败"
+    )
+  );
+}
+
 async function listGalleryTreeChildren(folderFile) {
   const allItems = [];
   let pageToken = null;
@@ -900,6 +1129,7 @@ async function listGalleryTreeChildren(folderFile) {
         "corpora",
         "drive"
       );
+
       params.set(
         "driveId",
         folderFile.driveId
@@ -919,31 +1149,19 @@ async function listGalleryTreeChildren(folderFile) {
     }
 
     const response =
-      await fetch(
+      await fetchGalleryTreePage(
         "https://www.googleapis.com/drive/v3/files?" +
           params.toString(),
-        {
-          headers: {
-            "Authorization":
-              "Bearer " + currentAccessToken
-          },
-          cache: "no-store"
-        }
+        folderFile
       );
-
-    if (!response.ok) {
-      throw new Error(
-        "读取文件夹内容失败：" +
-        folderFile.name +
-        " · HTTP " +
-        response.status
-      );
-    }
 
     const data =
       await response.json();
 
-    for (const file of data.files || []) {
+    for (
+      const file
+      of data.files || []
+    ) {
       file.resourceKey =
         file.resourceKey ||
         fileResourceKey(file.id) ||
@@ -952,14 +1170,20 @@ async function listGalleryTreeChildren(folderFile) {
       if (
         isDriveFolder(file) ||
         isImageFile(file) ||
-        (file.mimeType && file.mimeType.startsWith("video/"))
+        (
+          file.mimeType &&
+          file.mimeType.startsWith(
+            "video/"
+          )
+        )
       ) {
         allItems.push(file);
       }
     }
 
     pageToken =
-      data.nextPageToken || null;
+      data.nextPageToken ||
+      null;
   } while (pageToken);
 
   const collator =
@@ -973,13 +1197,23 @@ async function listGalleryTreeChildren(folderFile) {
 
   allItems.sort((a, b) => {
     const aFolder =
-      isDriveFolder(a) ? 0 : 1;
+      isDriveFolder(a)
+        ? 0
+        : 1;
 
     const bFolder =
-      isDriveFolder(b) ? 0 : 1;
+      isDriveFolder(b)
+        ? 0
+        : 1;
 
-    if (aFolder !== bFolder) {
-      return aFolder - bFolder;
+    if (
+      aFolder !==
+      bFolder
+    ) {
+      return (
+        aFolder -
+        bFolder
+      );
     }
 
     return collator.compare(
@@ -991,42 +1225,204 @@ async function listGalleryTreeChildren(folderFile) {
   return allItems;
 }
 
-async function buildGalleryFolderTree(rootFolder, seedTree = null, onProgress = null) {
+
+async function buildGalleryFolderTree(
+  rootFolder,
+  seedTree = null,
+  onProgress = null
+) {
   const rootNode =
-    seedTree && seedTree.file?.id === rootFolder.id
+    (
+      seedTree &&
+      seedTree.file?.id ===
+        rootFolder.id
+    )
       ? seedTree
-      : { file: rootFolder, children: [], _scanned: false };
-
-  const queue = collectUnscannedFolderNodes(rootNode);
-  if (!queue.length && !rootNode._scanned) queue.push(rootNode);
-
-  const MAX_FOLDERS = 20000;
-  const CONCURRENCY = 8;
-
-  while (queue.length) {
-    const batch = queue.splice(0, CONCURRENCY);
-    await Promise.all(
-      batch.map(async node => {
-        const items = await listGalleryTreeChildren(node.file);
-        node.children = items.map(file => ({
-          file,
+      : {
+          file: rootFolder,
           children: [],
-          _scanned: !isDriveFolder(file)
-        }));
-        node._scanned = true;
-        for (const child of node.children) {
-          if (isDriveFolder(child.file)) queue.push(child);
-        }
-        if (typeof onProgress === "function") onProgress(countDriveTreeFolders(rootNode), queue.length);
-      })
-    );
-    await saveDriveTreeCache(rootFolder.id, rootNode, false);
-    if (countDriveTreeFolders(rootNode) > MAX_FOLDERS) {
-      throw new Error("文件夹数量超过 " + MAX_FOLDERS + "，为避免浏览器卡死已停止读取。");
-    }
+          _scanned: false
+        };
+
+  if (
+    !Array.isArray(
+      rootNode._scanErrors
+    )
+  ) {
+    rootNode._scanErrors = [];
   }
 
-  await saveDriveTreeCache(rootFolder.id, rootNode, true);
+  const queue =
+    collectUnscannedFolderNodes(
+      rootNode
+    );
+
+  if (
+    !queue.length &&
+    !rootNode._scanned
+  ) {
+    queue.push(rootNode);
+  }
+
+  const MAX_FOLDERS = 20000;
+  const CONCURRENCY = 4;
+
+  while (queue.length) {
+    const batch =
+      queue.splice(
+        0,
+        CONCURRENCY
+      );
+
+    const results =
+      await Promise.allSettled(
+        batch.map(async node => {
+          const items =
+            await listGalleryTreeChildren(
+              node.file
+            );
+
+          node.children =
+            items.map(file => ({
+              file,
+              children: [],
+              _scanned:
+                !isDriveFolder(
+                  file
+                )
+            }));
+
+          node._scanned = true;
+          node._scanFailed = false;
+          delete node._scanError;
+
+          for (
+            const child
+            of node.children
+          ) {
+            if (
+              isDriveFolder(
+                child.file
+              )
+            ) {
+              queue.push(
+                child
+              );
+            }
+          }
+
+          return node;
+        })
+      );
+
+    results.forEach(
+      (result, index) => {
+        if (
+          result.status ===
+          "fulfilled"
+        ) {
+          return;
+        }
+
+        const node =
+          batch[index];
+
+        const message =
+          result.reason?.message ||
+          String(
+            result.reason ||
+            "Unknown error"
+          );
+
+        node._scanned = true;
+        node._scanFailed = true;
+        node._scanError =
+          message;
+
+        if (
+          !Array.isArray(
+            node.children
+          )
+        ) {
+          node.children = [];
+        }
+
+        rootNode._scanErrors.push({
+          id:
+            node.file?.id ||
+            "",
+          name:
+            node.file?.name ||
+            "Unknown Folder",
+          message,
+          at:
+            Date.now()
+        });
+
+        if (
+          rootNode
+            ._scanErrors
+            .length > 100
+        ) {
+          rootNode
+            ._scanErrors =
+              rootNode
+                ._scanErrors
+                .slice(-100);
+        }
+
+        console.warn(
+          "Gallery 跳过暂不可读目录：",
+          node.file?.name,
+          result.reason
+        );
+      }
+    );
+
+    await saveDriveTreeCache(
+      rootFolder.id,
+      rootNode,
+      false
+    );
+
+    const known =
+      countDriveTreeFolders(
+        rootNode
+      );
+
+    if (
+      typeof onProgress ===
+      "function"
+    ) {
+      onProgress(
+        known,
+        queue.length,
+        rootNode
+          ._scanErrors
+          .length
+      );
+    }
+
+    if (
+      known >
+      MAX_FOLDERS
+    ) {
+      throw new Error(
+        "已发现超过 " +
+        MAX_FOLDERS +
+        " 个文件夹，为避免浏览器资源耗尽已停止扫描。"
+      );
+    }
+
+    await sleepDriveTree(0);
+  }
+
+  await saveDriveTreeCache(
+    rootFolder.id,
+    rootNode,
+    true
+  );
+
   return rootNode;
 }
 
@@ -1633,15 +2029,49 @@ async function refreshGalleryTreeInBackground(openedFile, { force = false, cache
     const tree = await buildGalleryFolderTree(
       galleryRootFolder,
       seedTree,
-      (known, pending) => setStatus(
-        "后台扫描 1433223 · 已发现 " + known + " · 待扫描 " + pending + "（已发现数量不是最终总数）"
+      (known, pending, failed) => setStatus(
+        "后台扫描 1433223 · 已发现 " +
+        known +
+        " · 待扫描 " +
+        pending +
+        (
+          failed
+            ? " · 暂不可读 " +
+              failed
+            : ""
+        ) +
+        "（已发现数量不是最终总数）"
       )
     );
     applyGalleryTreeToUi(tree, openedFile);
-    setStatus("Original · 文件树缓存完成 · " + countDriveTreeFolders(tree) + " 个文件夹");
+    const failedCount =
+      Array.isArray(
+        tree._scanErrors
+      )
+        ? tree._scanErrors.length
+        : 0;
+
+    setStatus(
+      "Original · 文件树缓存完成 · " +
+      countDriveTreeFolders(tree) +
+      " 个文件夹" +
+      (
+        failedCount
+          ? " · " +
+            failedCount +
+            " 个目录暂不可读"
+          : ""
+      )
+    );
   } catch (error) {
     console.warn("Gallery 后台建立缓存失败：", error);
-    setStatus("Original · 当前图片可查看 · 后台缓存失败");
+    setStatus(
+      "Original · 当前图片可查看 · 后台缓存失败 · " +
+      (
+        error?.message ||
+        "未知错误"
+      )
+    );
   }
 }
 
