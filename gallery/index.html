@@ -779,12 +779,12 @@ async function findGalleryRootFolder(openedFile) {
 /* ================================================================
  * Persistent 1433223 Tree Cache · shared with video page
  * ================================================================ */
-const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v5";
-const DRIVE_TREE_CACHE_VERSION = 5;
+const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v6";
+const DRIVE_TREE_CACHE_VERSION = 6;
 
 function driveTreeCacheRequest(rootId) {
   return new Request(
-    location.origin + "/__drive_original_player_tree_cache__/v5/" + encodeURIComponent(rootId),
+    location.origin + "/__drive_original_player_tree_cache__/v6/" + encodeURIComponent(rootId),
     { method: "GET" }
   );
 }
@@ -918,15 +918,11 @@ function isDriveTreeRetryable(
   return false;
 }
 
-async function fetchGalleryTreePage(
+async function fetchKnownGoodGalleryList(
   url,
-  folderFile,
-  {
-    useResourceKey = false
-  } = {}
+  folderFile
 ) {
   const MAX_ATTEMPTS = 5;
-
   let token =
     currentAccessToken;
 
@@ -937,29 +933,15 @@ async function fetchGalleryTreePage(
     attempt < MAX_ATTEMPTS;
     attempt++
   ) {
-    const headers = {
-      "Authorization":
-        "Bearer " + token
-    };
-
-    if (
-      useResourceKey &&
-      folderFile?.resourceKey
-    ) {
-      headers[
-        "X-Goog-Drive-Resource-Keys"
-      ] =
-        folderFile.id +
-        "/" +
-        folderFile.resourceKey;
-    }
-
     try {
       const response =
         await fetch(
           url,
           {
-            headers,
+            headers: {
+              "Authorization":
+                "Bearer " + token
+            },
             cache: "no-store"
           }
         );
@@ -968,7 +950,7 @@ async function fetchGalleryTreePage(
         return response;
       }
 
-      const bodyText =
+      const text =
         await response
           .text()
           .catch(() => "");
@@ -982,9 +964,7 @@ async function fetchGalleryTreePage(
           await getBridgeAccessToken();
 
         if (freshToken) {
-          token =
-            freshToken;
-
+          token = freshToken;
           currentAccessToken =
             freshToken;
 
@@ -996,16 +976,9 @@ async function fetchGalleryTreePage(
         }
       }
 
-      const message =
-        getDriveTreeErrorMessage(
-          bodyText,
-          "HTTP " +
-            response.status
-        );
-
-      lastError =
+      const error =
         new Error(
-          "读取目录失败：" +
+          "读取文件夹内容失败：" +
           (
             folderFile?.name ||
             folderFile?.id ||
@@ -1013,58 +986,58 @@ async function fetchGalleryTreePage(
           ) +
           " · HTTP " +
           response.status +
-          " · " +
-          message
+          (
+            text
+              ? " · " +
+                text
+                  .replace(/\s+/g, " ")
+                  .slice(0, 260)
+              : ""
+          )
         );
 
-      lastError.status =
+      error.status =
         response.status;
 
-      lastError.bodyText =
-        bodyText;
+      lastError = error;
+
+      const retryable =
+        response.status === 408 ||
+        response.status === 429 ||
+        response.status === 500 ||
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        (
+          response.status === 403 &&
+          /rateLimitExceeded|userRateLimitExceeded|backendError/i
+            .test(text)
+        );
 
       if (
-        isDriveTreeRetryable(
-          response.status,
-          bodyText
-        ) &&
+        retryable &&
         attempt <
           MAX_ATTEMPTS - 1
       ) {
-        const retryAfter =
-          Number(
-            response.headers.get(
-              "Retry-After"
-            )
-          );
-
-        const waitMs =
-          Number.isFinite(
-            retryAfter
-          ) &&
-          retryAfter > 0
-            ? retryAfter * 1000
-            : Math.min(
-                8000,
-                600 *
-                  Math.pow(
-                    2,
-                    attempt
-                  ) +
-                  Math.floor(
-                    Math.random() *
-                    350
-                  )
-              );
-
         await sleepDriveTree(
-          waitMs
+          Math.min(
+            8000,
+            600 *
+              Math.pow(
+                2,
+                attempt
+              ) +
+              Math.floor(
+                Math.random() *
+                300
+              )
+          )
         );
 
         continue;
       }
 
-      throw lastError;
+      throw error;
     } catch (error) {
       lastError = error;
 
@@ -1083,11 +1056,10 @@ async function fetchGalleryTreePage(
               ) +
               Math.floor(
                 Math.random() *
-                350
+                300
               )
           )
         );
-
         continue;
       }
 
@@ -1098,99 +1070,8 @@ async function fetchGalleryTreePage(
   throw (
     lastError ||
     new Error(
-      "Drive 目录请求失败"
+      "Drive Gallery 文件夹请求失败"
     )
-  );
-}
-
-function buildGalleryTreeListUrl(
-  folderFile,
-  pageToken,
-  corpusMode
-) {
-  const params =
-    new URLSearchParams({
-      q:
-        "'" +
-        escapeDriveQueryValue(
-          folderFile.id
-        ) +
-        "' in parents and trashed = false",
-      spaces: "drive",
-      pageSize: "1000",
-      supportsAllDrives:
-        "true",
-      includeItemsFromAllDrives:
-        "true",
-      fields:
-        "nextPageToken,incompleteSearch,files(" +
-        [
-          "id",
-          "name",
-          "mimeType",
-          "size",
-          "thumbnailLink",
-          "resourceKey",
-          "parents",
-          "driveId",
-          "capabilities/canDownload",
-          "imageMediaMetadata",
-          "videoMediaMetadata"
-        ].join(",") +
-        ")"
-    });
-
-  if (pageToken) {
-    params.set(
-      "pageToken",
-      pageToken
-    );
-  }
-
-  if (
-    corpusMode === "drive" &&
-    folderFile.driveId
-  ) {
-    params.set(
-      "corpora",
-      "drive"
-    );
-
-    params.set(
-      "driveId",
-      folderFile.driveId
-    );
-  } else {
-    params.set(
-      "corpora",
-      "user"
-    );
-  }
-
-  return (
-    "https://www.googleapis.com/drive/v3/files?" +
-    params.toString()
-  );
-}
-
-async function requestGalleryTreeListVariant(
-  folderFile,
-  pageToken,
-  {
-    corpusMode = "user",
-    useResourceKey = false
-  } = {}
-) {
-  return fetchGalleryTreePage(
-    buildGalleryTreeListUrl(
-      folderFile,
-      pageToken,
-      corpusMode
-    ),
-    folderFile,
-    {
-      useResourceKey
-    }
   );
 }
 
@@ -1201,84 +1082,69 @@ async function listGalleryTreeChildren(
   let pageToken = null;
 
   do {
-    const variants = [
-      {
-        corpusMode:
-          "user",
-        useResourceKey:
-          false
-      }
-    ];
+    /*
+     * 精确恢复 V6 Gallery 的成功请求格式。
+     */
+    const params =
+      new URLSearchParams({
+        q:
+          "'" +
+          escapeDriveQueryValue(
+            folderFile.id
+          ) +
+          "' in parents and trashed = false",
+        spaces: "drive",
+        pageSize: "1000",
+        supportsAllDrives:
+          "true",
+        includeItemsFromAllDrives:
+          "true",
+        fields:
+          "nextPageToken,files(" +
+          [
+            "id",
+            "name",
+            "mimeType",
+            "size",
+            "thumbnailLink",
+            "capabilities",
+            "imageMediaMetadata",
+            "resourceKey",
+            "parents",
+            "driveId"
+          ].join(",") +
+          ")"
+      });
 
     if (folderFile.driveId) {
-      variants.push({
-        corpusMode:
-          "drive",
-        useResourceKey:
-          false
-      });
-    }
-
-    if (folderFile.resourceKey) {
-      variants.push({
-        corpusMode:
-          "user",
-        useResourceKey:
-          true
-      });
-
-      if (folderFile.driveId) {
-        variants.push({
-          corpusMode:
-            "drive",
-          useResourceKey:
-            true
-        });
-      }
-    }
-
-    let response = null;
-    let lastError = null;
-
-    for (
-      const variant
-      of variants
-    ) {
-      try {
-        response =
-          await requestGalleryTreeListVariant(
-            folderFile,
-            pageToken,
-            variant
-          );
-
-        if (response?.ok) {
-          break;
-        }
-      } catch (error) {
-        lastError = error;
-
-        console.debug(
-          "Gallery 目录列表 variant 失败：",
-          folderFile.name,
-          variant,
-          error
-        );
-      }
-    }
-
-    if (!response?.ok) {
-      throw (
-        lastError ||
-        new Error(
-          "所有目录列表请求方式均失败：" +
-          (
-            folderFile.name ||
-            folderFile.id
-          )
-        )
+      params.set(
+        "corpora",
+        "drive"
+      );
+      params.set(
+        "driveId",
+        folderFile.driveId
+      );
+    } else {
+      params.set(
+        "corpora",
+        "user"
       );
     }
+
+    if (pageToken) {
+      params.set(
+        "pageToken",
+        pageToken
+      );
+    }
+
+    const response =
+      await fetchKnownGoodGalleryList(
+        "https://www.googleapis.com/drive/v3/files?" +
+          params.toString(),
+        folderFile
+      );
 
     const data =
       await response.json();
@@ -1296,13 +1162,7 @@ async function listGalleryTreeChildren(
 
       if (
         isDriveFolder(file) ||
-        isImageFile(file) ||
-        (
-          file.mimeType &&
-          file.mimeType.startsWith(
-            "video/"
-          )
-        )
+        isImageFile(file)
       ) {
         allItems.push(file);
       }
@@ -1352,6 +1212,7 @@ async function listGalleryTreeChildren(
   return allItems;
 }
 
+
 async function buildGalleryFolderTree(
   rootFolder,
   seedTree = null,
@@ -1370,13 +1231,12 @@ async function buildGalleryFolderTree(
           _scanned: false
         };
 
-  if (
-    !Array.isArray(
+  rootNode._scanErrors =
+    Array.isArray(
       rootNode._scanErrors
     )
-  ) {
-    rootNode._scanErrors = [];
-  }
+      ? rootNode._scanErrors
+      : [];
 
   const queue =
     collectUnscannedFolderNodes(
@@ -1431,15 +1291,15 @@ async function buildGalleryFolderTree(
                 child.file
               )
             ) {
-              queue.push(
-                child
-              );
+              queue.push(child);
             }
           }
 
           return node;
         })
       );
+
+    let rootFailure = null;
 
     results.forEach(
       (result, index) => {
@@ -1460,18 +1320,22 @@ async function buildGalleryFolderTree(
             "Unknown error"
           );
 
+        if (node === rootNode) {
+          node._scanned = false;
+          node._rootScanError =
+            message;
+
+          rootFailure =
+            result.reason ||
+            new Error(message);
+
+          return;
+        }
+
         node._scanned = true;
         node._scanFailed = true;
         node._scanError =
           message;
-
-        if (
-          !Array.isArray(
-            node.children
-          )
-        ) {
-          node.children = [];
-        }
 
         rootNode._scanErrors.push({
           id:
@@ -1490,24 +1354,10 @@ async function buildGalleryFolderTree(
             ._scanErrors
             .length > 100
         ) {
-          rootNode
-            ._scanErrors =
-              rootNode
-                ._scanErrors
-                .slice(-100);
-        }
-
-        console.warn(
-          "Gallery 跳过暂不可读目录：",
-          node.file?.name,
-          result.reason
-        );
-
-        if (
-          node === rootNode
-        ) {
-          rootNode._rootScanError =
-            message;
+          rootNode._scanErrors =
+            rootNode
+              ._scanErrors
+              .slice(-100);
         }
       }
     );
@@ -1517,6 +1367,10 @@ async function buildGalleryFolderTree(
       rootNode,
       false
     );
+
+    if (rootFailure) {
+      throw rootFailure;
+    }
 
     const known =
       countDriveTreeFolders(
@@ -1550,6 +1404,8 @@ async function buildGalleryFolderTree(
 
     await sleepDriveTree(0);
   }
+
+  delete rootNode._rootScanError;
 
   await saveDriveTreeCache(
     rootFolder.id,
@@ -1793,82 +1649,86 @@ function getGalleryBackgroundThumbnailUrl(
   return raw;
 }
 
-function preloadGalleryBackgroundThumbnail(
+async function fetchGalleryBackgroundThumbnailObjectUrl(
   url,
-  timeout = 8000
+  timeout = 10000
 ) {
-  return new Promise(
-    (resolve, reject) => {
-      if (!url) {
-        reject(
-          new Error(
-            "没有可用的 Drive thumbnailLink"
-          )
-        );
+  if (!url) {
+    throw new Error(
+      "没有可用的 Drive thumbnailLink"
+    );
+  }
 
-        return;
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      timeout
+    );
+
+  async function request(
+    token
+  ) {
+    return fetch(
+      url,
+      {
+        headers: {
+          "Authorization":
+            "Bearer " + token
+        },
+        cache: "force-cache",
+        signal:
+          controller.signal
       }
+    );
+  }
 
-      const img =
-        new Image();
+  try {
+    let response =
+      await request(
+        currentAccessToken
+      );
 
-      let settled = false;
+    if (
+      response.status === 401
+    ) {
+      const freshToken =
+        await getBridgeAccessToken();
 
-      const finish =
-        (ok, error) => {
-          if (settled) return;
+      if (freshToken) {
+        currentAccessToken =
+          freshToken;
 
-          settled = true;
-          clearTimeout(timer);
+        await sendTokenToWorker(
+          freshToken
+        ).catch(() => {});
 
-          img.onload = null;
-          img.onerror = null;
-
-          if (ok) {
-            resolve(url);
-          } else {
-            reject(
-              error ||
-              new Error(
-                "Gallery 背景缩略图加载失败"
-              )
-            );
-          }
-        };
-
-      img.decoding =
-        "async";
-
-      img.referrerPolicy =
-        "no-referrer";
-
-      img.onload =
-        () => finish(true);
-
-      img.onerror =
-        () =>
-          finish(
-            false,
-            new Error(
-              "Gallery 背景缩略图加载失败"
-            )
+        response =
+          await request(
+            freshToken
           );
-
-      const timer =
-        setTimeout(
-          () =>
-            finish(
-              false,
-              new Error(
-                "Gallery 背景缩略图加载超时"
-              )
-            ),
-          timeout
-        );
-
-      img.src = url;
+      }
     }
-  );
+
+    if (!response.ok) {
+      throw new Error(
+        "Gallery 背景缩略图读取失败 · HTTP " +
+        response.status
+      );
+    }
+
+    const blob =
+      await response.blob();
+
+    return URL.createObjectURL(
+      blob
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function isGalleryBackgroundPaused() {
@@ -1993,9 +1853,10 @@ async function showNextGalleryBackground() {
       return;
     }
 
-    await preloadGalleryBackgroundThumbnail(
-      thumbnailUrl
-    );
+    const nextObjectUrl =
+      await fetchGalleryBackgroundThumbnailObjectUrl(
+        thumbnailUrl
+      );
 
     /*
      * 如果加载过程中打开了原图，
@@ -2004,6 +1865,10 @@ async function showNextGalleryBackground() {
     if (
       isGalleryBackgroundPaused()
     ) {
+      URL.revokeObjectURL(
+        nextObjectUrl
+      );
+
       scheduleGalleryBackgroundNext(
         GALLERY_BACKGROUND_INTERVAL_MS
       );
@@ -2011,10 +1876,13 @@ async function showNextGalleryBackground() {
       return;
     }
 
+    const previousObjectUrl =
+      galleryBgVisibleObjectUrl;
+
     galleryBgHiddenLayer
       .style
       .backgroundImage =
-        `url("${thumbnailUrl}")`;
+        `url("${nextObjectUrl}")`;
 
     await new Promise(
       resolve =>
@@ -2048,7 +1916,20 @@ async function showNextGalleryBackground() {
       oldLayer;
 
     galleryBgVisibleObjectUrl =
-      null;
+      nextObjectUrl;
+
+    if (previousObjectUrl) {
+      setTimeout(
+        () => {
+          try {
+            URL.revokeObjectURL(
+              previousObjectUrl
+            );
+          } catch (_) {}
+        },
+        1400
+      );
+    }
 
     scheduleGalleryBackgroundNext(
       GALLERY_BACKGROUND_INTERVAL_MS
@@ -2091,6 +1972,19 @@ function startGalleryBackgroundSlideshow() {
   galleryBgVisibleLayer = a;
   galleryBgHiddenLayer = b;
   galleryBgQueue = [];
+
+  if (
+    galleryBgVisibleObjectUrl
+  ) {
+    try {
+      URL.revokeObjectURL(
+        galleryBgVisibleObjectUrl
+      );
+    } catch (_) {}
+
+    galleryBgVisibleObjectUrl =
+      null;
+  }
 
   a.style.backgroundImage =
     "none";
