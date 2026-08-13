@@ -2778,15 +2778,15 @@ async function initServiceWorker() {
    * 总数只有在扫描队列归零后才真正确定。
    */
   const DRIVE_TREE_CACHE_NAME =
-    "drive-original-player-tree-cache-v4";
+    "drive-original-player-tree-cache-v5";
 
   const DRIVE_TREE_CACHE_VERSION =
-    4;
+    5;
 
   function driveTreeCacheRequest(rootId) {
     return new Request(
       location.origin +
-      "/__drive_original_player_tree_cache__/v4/" +
+      "/__drive_original_player_tree_cache__/v5/" +
       encodeURIComponent(rootId),
       { method: "GET" }
     );
@@ -3221,9 +3221,13 @@ async function initServiceWorker() {
   async function fetchDriveTreePage(
     url,
     folderFile,
-    accessToken
+    accessToken,
+    {
+      useResourceKey = false
+    } = {}
   ) {
     const MAX_ATTEMPTS = 5;
+
     let token =
       accessToken ||
       currentAccessToken;
@@ -3241,9 +3245,13 @@ async function initServiceWorker() {
       };
 
       /*
-       * 某些通过链接共享的目录要求 resource key。
+       * V10:
+       * 不再默认给每个 files.list 都塞 resource-key header。
+       * 先走最简单、旧版已经验证能工作的请求。
+       * 只有 fallback 明确要求时才加入。
        */
       if (
+        useResourceKey &&
         folderFile?.resourceKey
       ) {
         headers[
@@ -3273,11 +3281,6 @@ async function initServiceWorker() {
             .text()
             .catch(() => "");
 
-        /*
-         * 长时间后台扫描时 Access Token 可能过期。
-         * 401 时直接从 OAuth bridge 换一枚新 Token，
-         * 不让整个文件树失败。
-         */
         if (
           response.status === 401 &&
           attempt <
@@ -3287,7 +3290,9 @@ async function initServiceWorker() {
             await getBridgeAccessToken();
 
           if (freshToken) {
-            token = freshToken;
+            token =
+              freshToken;
+
             currentAccessToken =
               freshToken;
 
@@ -3305,9 +3310,11 @@ async function initServiceWorker() {
         lastError =
           new Error(
             "读取目录失败：" +
-            (folderFile?.name ||
+            (
+              folderFile?.name ||
               folderFile?.id ||
-              "Unknown Folder") +
+              "Unknown Folder"
+            ) +
             " · HTTP " +
             response.status +
             " · " +
@@ -3317,10 +3324,9 @@ async function initServiceWorker() {
         lastError.status =
           response.status;
 
-        /*
-         * 429 / 5xx / 配额型 403：
-         * 指数退避 + 抖动，最多 5 次。
-         */
+        lastError.bodyText =
+          bodyText;
+
         if (
           isDriveTreeRetryable(
             response.status,
@@ -3366,10 +3372,6 @@ async function initServiceWorker() {
       } catch (error) {
         lastError = error;
 
-        /*
-         * fetch 网络错误没有 HTTP status，
-         * 同样做有限次数重试。
-         */
         if (
           !error?.status &&
           attempt <
@@ -3405,22 +3407,32 @@ async function initServiceWorker() {
     );
   }
 
-  async function listVideoTreeChildren(folderFile, accessToken) {
-    const allItems = [];
-    let pageToken = null;
-
-    do {
-      const params = new URLSearchParams({
+  function buildDriveTreeListUrl(
+    folderFile,
+    pageToken,
+    corpusMode
+  ) {
+    const params =
+      new URLSearchParams({
         q:
           "'" +
-          escapeDriveQueryValue(folderFile.id) +
+          escapeDriveQueryValue(
+            folderFile.id
+          ) +
           "' in parents and trashed = false",
         spaces: "drive",
         pageSize: "1000",
-        supportsAllDrives: "true",
-        includeItemsFromAllDrives: "true",
+        supportsAllDrives:
+          "true",
+        includeItemsFromAllDrives:
+          "true",
+
+        /*
+         * 只请求播放器/图库实际需要的字段。
+         * capabilities 用明确的 nested field。
+         */
         fields:
-          "nextPageToken,files(" +
+          "nextPageToken,incompleteSearch,files(" +
           [
             "id",
             "name",
@@ -3430,43 +3442,184 @@ async function initServiceWorker() {
             "resourceKey",
             "parents",
             "driveId",
-            "capabilities",
+            "capabilities/canDownload",
             "videoMediaMetadata",
             "imageMediaMetadata"
           ].join(",") +
           ")"
       });
 
+    if (pageToken) {
+      params.set(
+        "pageToken",
+        pageToken
+      );
+    }
+
+    /*
+     * variant A:
+     * corpora=user，兼容 My Drive + 用户可访问项目。
+     *
+     * variant B:
+     * 如果确实是 Shared Drive，再尝试 drive corpus。
+     */
+    if (
+      corpusMode === "drive" &&
+      folderFile.driveId
+    ) {
+      params.set(
+        "corpora",
+        "drive"
+      );
+
+      params.set(
+        "driveId",
+        folderFile.driveId
+      );
+    } else {
+      params.set(
+        "corpora",
+        "user"
+      );
+    }
+
+    return (
+      "https://www.googleapis.com/drive/v3/files?" +
+      params.toString()
+    );
+  }
+
+  async function requestDriveTreeListVariant(
+    folderFile,
+    accessToken,
+    pageToken,
+    {
+      corpusMode = "user",
+      useResourceKey = false
+    } = {}
+  ) {
+    const url =
+      buildDriveTreeListUrl(
+        folderFile,
+        pageToken,
+        corpusMode
+      );
+
+    return fetchDriveTreePage(
+      url,
+      folderFile,
+      accessToken,
+      {
+        useResourceKey
+      }
+    );
+  }
+
+  async function listVideoTreeChildren(
+    folderFile,
+    accessToken
+  ) {
+    const allItems = [];
+    let pageToken = null;
+
+    do {
+      /*
+       * V10 fallback 顺序：
+       *
+       * 1) user corpus + 无 resourceKey
+       *    ——最简单，也最接近之前能正常工作的版本。
+       *
+       * 2) shared drive 项目：
+       *    drive corpus + 无 resourceKey
+       *
+       * 3) 文件有 resourceKey 时：
+       *    user corpus + resourceKey
+       *
+       * 4) shared drive + resourceKey
+       *
+       * 任意一个成功即使用，不会因为一个增强路径失败
+       * 把根目录判成不可读。
+       */
+      const variants = [
+        {
+          corpusMode:
+            "user",
+          useResourceKey:
+            false
+        }
+      ];
+
       if (folderFile.driveId) {
-        params.set(
-          "corpora",
-          "drive"
-        );
-        params.set(
-          "driveId",
-          folderFile.driveId
-        );
-      } else {
-        params.set(
-          "corpora",
-          "user"
-        );
+        variants.push({
+          corpusMode:
+            "drive",
+          useResourceKey:
+            false
+        });
       }
 
-      if (pageToken) {
-        params.set(
-          "pageToken",
-          pageToken
-        );
+      if (folderFile.resourceKey) {
+        variants.push({
+          corpusMode:
+            "user",
+          useResourceKey:
+            true
+        });
+
+        if (folderFile.driveId) {
+          variants.push({
+            corpusMode:
+              "drive",
+            useResourceKey:
+              true
+          });
+        }
       }
 
-      const response =
-        await fetchDriveTreePage(
-          "https://www.googleapis.com/drive/v3/files?" +
-            params.toString(),
-          folderFile,
-          accessToken
+      let response = null;
+      let lastError = null;
+
+      for (
+        const variant
+        of variants
+      ) {
+        try {
+          response =
+            await requestDriveTreeListVariant(
+              folderFile,
+              currentAccessToken ||
+                accessToken,
+              pageToken,
+              variant
+            );
+
+          if (response?.ok) {
+            break;
+          }
+        } catch (error) {
+          lastError = error;
+
+          console.debug(
+            "目录列表 variant 失败：",
+            folderFile.name,
+            variant,
+            error
+          );
+        }
+      }
+
+      if (!response?.ok) {
+        throw (
+          lastError ||
+          new Error(
+            "所有目录列表请求方式均失败：" +
+            (
+              folderFile.name ||
+              folderFile.id
+            )
+          )
         );
+      }
 
       const data =
         await response.json();
@@ -3487,7 +3640,9 @@ async function initServiceWorker() {
           isVideoFile(file) ||
           isImageFile(file)
         ) {
-          allItems.push(file);
+          allItems.push(
+            file
+          );
         }
       }
 
@@ -3706,6 +3861,13 @@ async function initServiceWorker() {
             node.file?.name,
             result.reason
           );
+
+          if (
+            node === rootNode
+          ) {
+            rootNode._rootScanError =
+              message;
+          }
         }
       );
 
@@ -3740,7 +3902,9 @@ async function initServiceWorker() {
           failed:
             rootNode
               ._scanErrors
-              .length
+              .length,
+          tree:
+            rootNode
         });
       }
 
@@ -5370,6 +5534,73 @@ async function initServiceWorker() {
     scheduleAdjacentVideoPrime();
   }
 
+
+  function syncProgressiveDriveBackgrounds(
+    partialTree
+  ) {
+    if (!partialTree) {
+      return;
+    }
+
+    const discoveredImages =
+      flattenImagesFromDriveTree(
+        partialTree
+      );
+
+    if (!discoveredImages.length) {
+      return;
+    }
+
+    const byId =
+      new Map(
+        backgroundImageFiles.map(
+          file => [
+            file.id,
+            file
+          ]
+        )
+      );
+
+    for (
+      const file
+      of discoveredImages
+    ) {
+      byId.set(
+        file.id,
+        file
+      );
+    }
+
+    const oldCount =
+      backgroundImageFiles.length;
+
+    backgroundImageFiles =
+      Array.from(
+        byId.values()
+      );
+
+    /*
+     * 第一次发现图片：
+     * 立即恢复背景，不等整个 1433223 扫描完成。
+     */
+    if (
+      oldCount === 0 &&
+      backgroundImageFiles.length > 0
+    ) {
+      backgroundShuffleQueue = [];
+      startDriveBackgroundSlideshow();
+    } else if (
+      backgroundImageFiles.length >
+      oldCount
+    ) {
+      /*
+       * 后续发现更多图片只刷新随机池，
+       * 不重置当前正在显示的背景。
+       */
+      backgroundShuffleQueue = [];
+    }
+  }
+
   async function refreshVideoTreeInBackground(
     openedFile,
     {
@@ -5415,9 +5646,12 @@ async function initServiceWorker() {
           seedTree,
           progress => {
             /*
-             * discovered 仍然只是“目前已发现”，
-             * 不是最终总数。
+             * 扫描到图片就立刻加入背景池。
              */
+            syncProgressiveDriveBackgrounds(
+              progress.tree
+            );
+
             setStatus(
               "后台扫描 1433223 · 已扫描 " +
               progress.scanned +
@@ -5429,6 +5663,13 @@ async function initServiceWorker() {
                 progress.failed
                   ? " · 暂不可读 " +
                     progress.failed
+                  : ""
+              ) +
+              (
+                backgroundImageFiles.length
+                  ? " · 背景 " +
+                    backgroundImageFiles.length +
+                    " 张"
                   : ""
               ) +
               " · 视频可继续播放"
@@ -5448,18 +5689,27 @@ async function initServiceWorker() {
           ? tree._scanErrors.length
           : 0;
 
-      setStatus(
-        "Original · 1433223 扫描完成 · 共 " +
-        countKnownFolders(tree) +
-        " 个文件夹" +
-        (
-          failedCount
-            ? " · " +
-              failedCount +
-              " 个目录暂不可读"
-            : ""
-        )
-      );
+      if (
+        tree._rootScanError
+      ) {
+        setStatus(
+          "Original · 根目录读取失败 · " +
+          tree._rootScanError
+        );
+      } else {
+        setStatus(
+          "Original · 1433223 扫描完成 · 共 " +
+          countKnownFolders(tree) +
+          " 个文件夹" +
+          (
+            failedCount
+              ? " · " +
+                failedCount +
+                " 个目录暂不可读"
+              : ""
+          )
+        );
+      }
     } catch (error) {
       console.warn(
         "后台建立文件树缓存失败：",

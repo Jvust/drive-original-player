@@ -779,12 +779,12 @@ async function findGalleryRootFolder(openedFile) {
 /* ================================================================
  * Persistent 1433223 Tree Cache · shared with video page
  * ================================================================ */
-const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v4";
-const DRIVE_TREE_CACHE_VERSION = 4;
+const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v5";
+const DRIVE_TREE_CACHE_VERSION = 5;
 
 function driveTreeCacheRequest(rootId) {
   return new Request(
-    location.origin + "/__drive_original_player_tree_cache__/v4/" + encodeURIComponent(rootId),
+    location.origin + "/__drive_original_player_tree_cache__/v5/" + encodeURIComponent(rootId),
     { method: "GET" }
   );
 }
@@ -920,9 +920,13 @@ function isDriveTreeRetryable(
 
 async function fetchGalleryTreePage(
   url,
-  folderFile
+  folderFile,
+  {
+    useResourceKey = false
+  } = {}
 ) {
   const MAX_ATTEMPTS = 5;
+
   let token =
     currentAccessToken;
 
@@ -939,6 +943,7 @@ async function fetchGalleryTreePage(
     };
 
     if (
+      useResourceKey &&
       folderFile?.resourceKey
     ) {
       headers[
@@ -977,7 +982,9 @@ async function fetchGalleryTreePage(
           await getBridgeAccessToken();
 
         if (freshToken) {
-          token = freshToken;
+          token =
+            freshToken;
+
           currentAccessToken =
             freshToken;
 
@@ -999,9 +1006,11 @@ async function fetchGalleryTreePage(
       lastError =
         new Error(
           "读取目录失败：" +
-          (folderFile?.name ||
+          (
+            folderFile?.name ||
             folderFile?.id ||
-            "Unknown Folder") +
+            "Unknown Folder"
+          ) +
           " · HTTP " +
           response.status +
           " · " +
@@ -1010,6 +1019,9 @@ async function fetchGalleryTreePage(
 
       lastError.status =
         response.status;
+
+      lastError.bodyText =
+        bodyText;
 
       if (
         isDriveTreeRetryable(
@@ -1091,69 +1103,182 @@ async function fetchGalleryTreePage(
   );
 }
 
-async function listGalleryTreeChildren(folderFile) {
+function buildGalleryTreeListUrl(
+  folderFile,
+  pageToken,
+  corpusMode
+) {
+  const params =
+    new URLSearchParams({
+      q:
+        "'" +
+        escapeDriveQueryValue(
+          folderFile.id
+        ) +
+        "' in parents and trashed = false",
+      spaces: "drive",
+      pageSize: "1000",
+      supportsAllDrives:
+        "true",
+      includeItemsFromAllDrives:
+        "true",
+      fields:
+        "nextPageToken,incompleteSearch,files(" +
+        [
+          "id",
+          "name",
+          "mimeType",
+          "size",
+          "thumbnailLink",
+          "resourceKey",
+          "parents",
+          "driveId",
+          "capabilities/canDownload",
+          "imageMediaMetadata",
+          "videoMediaMetadata"
+        ].join(",") +
+        ")"
+    });
+
+  if (pageToken) {
+    params.set(
+      "pageToken",
+      pageToken
+    );
+  }
+
+  if (
+    corpusMode === "drive" &&
+    folderFile.driveId
+  ) {
+    params.set(
+      "corpora",
+      "drive"
+    );
+
+    params.set(
+      "driveId",
+      folderFile.driveId
+    );
+  } else {
+    params.set(
+      "corpora",
+      "user"
+    );
+  }
+
+  return (
+    "https://www.googleapis.com/drive/v3/files?" +
+    params.toString()
+  );
+}
+
+async function requestGalleryTreeListVariant(
+  folderFile,
+  pageToken,
+  {
+    corpusMode = "user",
+    useResourceKey = false
+  } = {}
+) {
+  return fetchGalleryTreePage(
+    buildGalleryTreeListUrl(
+      folderFile,
+      pageToken,
+      corpusMode
+    ),
+    folderFile,
+    {
+      useResourceKey
+    }
+  );
+}
+
+async function listGalleryTreeChildren(
+  folderFile
+) {
   const allItems = [];
   let pageToken = null;
 
   do {
-    const params =
-      new URLSearchParams({
-        q:
-          "'" +
-          escapeDriveQueryValue(folderFile.id) +
-          "' in parents and trashed = false",
-        spaces: "drive",
-        pageSize: "1000",
-        supportsAllDrives: "true",
-        includeItemsFromAllDrives: "true",
-        fields:
-          "nextPageToken,files(" +
-          [
-            "id",
-            "name",
-            "mimeType",
-            "size",
-            "thumbnailLink",
-            "capabilities",
-            "imageMediaMetadata",
-            "videoMediaMetadata",
-            "resourceKey",
-            "parents",
-            "driveId"
-          ].join(",") +
-          ")"
-      });
+    const variants = [
+      {
+        corpusMode:
+          "user",
+        useResourceKey:
+          false
+      }
+    ];
 
     if (folderFile.driveId) {
-      params.set(
-        "corpora",
-        "drive"
-      );
-
-      params.set(
-        "driveId",
-        folderFile.driveId
-      );
-    } else {
-      params.set(
-        "corpora",
-        "user"
-      );
+      variants.push({
+        corpusMode:
+          "drive",
+        useResourceKey:
+          false
+      });
     }
 
-    if (pageToken) {
-      params.set(
-        "pageToken",
-        pageToken
-      );
+    if (folderFile.resourceKey) {
+      variants.push({
+        corpusMode:
+          "user",
+        useResourceKey:
+          true
+      });
+
+      if (folderFile.driveId) {
+        variants.push({
+          corpusMode:
+            "drive",
+          useResourceKey:
+            true
+        });
+      }
     }
 
-    const response =
-      await fetchGalleryTreePage(
-        "https://www.googleapis.com/drive/v3/files?" +
-          params.toString(),
-        folderFile
+    let response = null;
+    let lastError = null;
+
+    for (
+      const variant
+      of variants
+    ) {
+      try {
+        response =
+          await requestGalleryTreeListVariant(
+            folderFile,
+            pageToken,
+            variant
+          );
+
+        if (response?.ok) {
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+
+        console.debug(
+          "Gallery 目录列表 variant 失败：",
+          folderFile.name,
+          variant,
+          error
+        );
+      }
+    }
+
+    if (!response?.ok) {
+      throw (
+        lastError ||
+        new Error(
+          "所有目录列表请求方式均失败：" +
+          (
+            folderFile.name ||
+            folderFile.id
+          )
+        )
       );
+    }
 
     const data =
       await response.json();
@@ -1164,7 +1289,9 @@ async function listGalleryTreeChildren(folderFile) {
     ) {
       file.resourceKey =
         file.resourceKey ||
-        fileResourceKey(file.id) ||
+        fileResourceKey(
+          file.id
+        ) ||
         null;
 
       if (
@@ -1224,7 +1351,6 @@ async function listGalleryTreeChildren(folderFile) {
 
   return allItems;
 }
-
 
 async function buildGalleryFolderTree(
   rootFolder,
@@ -1376,6 +1502,13 @@ async function buildGalleryFolderTree(
           node.file?.name,
           result.reason
         );
+
+        if (
+          node === rootNode
+        ) {
+          rootNode._rootScanError =
+            message;
+        }
       }
     );
 
@@ -1399,7 +1532,8 @@ async function buildGalleryFolderTree(
         queue.length,
         rootNode
           ._scanErrors
-          .length
+          .length,
+        rootNode
       );
     }
 
@@ -2017,6 +2151,78 @@ function applyGalleryTreeToUi(tree, openedFile) {
   if (galleryFiles.length) startGalleryBackgroundSlideshow();
 }
 
+
+function syncProgressiveGalleryBackgrounds(
+  partialTree
+) {
+  if (!partialTree) {
+    return;
+  }
+
+  const discoveredImages =
+    flattenImagesFromTree(
+      partialTree
+    );
+
+  if (!discoveredImages.length) {
+    return;
+  }
+
+  const byId =
+    new Map(
+      galleryFiles.map(
+        file => [
+          file.id,
+          file
+        ]
+      )
+    );
+
+  for (
+    const file
+    of discoveredImages
+  ) {
+    byId.set(
+      file.id,
+      file
+    );
+  }
+
+  const oldCount =
+    galleryFiles.length;
+
+  galleryFiles =
+    Array.from(
+      byId.values()
+    );
+
+  galleryFiles.forEach(
+    (file, index) =>
+      file._galleryIndex =
+        index
+  );
+
+  if (
+    galleryFiles.length >
+    oldCount
+  ) {
+    galleryBgQueue = [];
+  }
+
+  /*
+   * Gallery 首页只要已经发现至少一张图片，
+   * 就可以开始/继续背景轮播。
+   * 正在查看原图时原有暂停规则仍然生效。
+   */
+  if (
+    galleryFiles.length &&
+    !galleryBgTimer &&
+    !isGalleryBackgroundPaused()
+  ) {
+    startGalleryBackgroundSlideshow();
+  }
+}
+
 async function refreshGalleryTreeInBackground(openedFile, { force = false, cachedPayload = null } = {}) {
   if (!galleryRootFolder || !currentAccessToken) return;
   try {
@@ -2029,19 +2235,32 @@ async function refreshGalleryTreeInBackground(openedFile, { force = false, cache
     const tree = await buildGalleryFolderTree(
       galleryRootFolder,
       seedTree,
-      (known, pending, failed) => setStatus(
-        "后台扫描 1433223 · 已发现 " +
-        known +
-        " · 待扫描 " +
-        pending +
-        (
-          failed
-            ? " · 暂不可读 " +
-              failed
-            : ""
-        ) +
-        "（已发现数量不是最终总数）"
-      )
+      (known, pending, failed, partialTree) => {
+        syncProgressiveGalleryBackgrounds(
+          partialTree
+        );
+
+        setStatus(
+          "后台扫描 1433223 · 已发现 " +
+          known +
+          " · 待扫描 " +
+          pending +
+          (
+            failed
+              ? " · 暂不可读 " +
+                failed
+              : ""
+          ) +
+          (
+            galleryFiles.length
+              ? " · 图片 " +
+                galleryFiles.length +
+                " 张"
+              : ""
+          ) +
+          "（已发现数量不是最终总数）"
+        );
+      }
     );
     applyGalleryTreeToUi(tree, openedFile);
     const failedCount =
