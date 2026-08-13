@@ -894,7 +894,10 @@
     <aside id="videoPlaylistDrawer" aria-label="1433223 视频文件树">
       <div class="playlist-head">
         <div id="playlistTitle">当前文件夹</div>
-        <button onclick="closeVideoPlaylist()">关闭</button>
+        <div style="display:flex;gap:8px">
+          <button onclick="forceRefreshDriveTree()" title="Drive 中新增、删除或移动文件后再点">刷新列表</button>
+          <button onclick="closeVideoPlaylist()">关闭</button>
+        </div>
       </div>
       <div id="videoPlaylistItems"></div>
       <div class="playlist-foot">
@@ -2764,6 +2767,315 @@ async function initServiceWorker() {
     ].join(",");
   }
 
+
+  /*
+   * ================================================================
+   * Persistent 1433223 Tree Cache · V8
+   * ================================================================
+   *
+   * 重要：
+   * “已发现 N 个文件夹”不是总数。
+   * 总数只有在扫描队列归零后才真正确定。
+   */
+  const DRIVE_TREE_CACHE_NAME =
+    "drive-original-player-tree-cache-v3";
+
+  const DRIVE_TREE_CACHE_VERSION =
+    3;
+
+  function driveTreeCacheRequest(rootId) {
+    return new Request(
+      location.origin +
+      "/__drive_original_player_tree_cache__/v3/" +
+      encodeURIComponent(rootId),
+      { method: "GET" }
+    );
+  }
+
+  async function loadDriveTreeCache(rootId) {
+    if (
+      !("caches" in window) ||
+      !rootId
+    ) {
+      return null;
+    }
+
+    try {
+      const cache =
+        await caches.open(
+          DRIVE_TREE_CACHE_NAME
+        );
+
+      const response =
+        await cache.match(
+          driveTreeCacheRequest(
+            rootId
+          )
+        );
+
+      if (!response) {
+        return null;
+      }
+
+      const payload =
+        await response.json();
+
+      if (
+        !payload ||
+        payload.version !==
+          DRIVE_TREE_CACHE_VERSION ||
+        payload.rootId !== rootId ||
+        !payload.tree
+      ) {
+        return null;
+      }
+
+      return payload;
+    } catch (error) {
+      console.debug(
+        "读取文件树缓存失败：",
+        error
+      );
+
+      return null;
+    }
+  }
+
+  async function saveDriveTreeCache(
+    rootId,
+    tree,
+    complete = false
+  ) {
+    if (
+      !("caches" in window) ||
+      !rootId ||
+      !tree
+    ) {
+      return;
+    }
+
+    try {
+      const cache =
+        await caches.open(
+          DRIVE_TREE_CACHE_NAME
+        );
+
+      await cache.put(
+        driveTreeCacheRequest(
+          rootId
+        ),
+        new Response(
+          JSON.stringify({
+            version:
+              DRIVE_TREE_CACHE_VERSION,
+            rootId,
+            complete:
+              !!complete,
+            savedAt:
+              Date.now(),
+            tree
+          }),
+          {
+            headers: {
+              "Content-Type":
+                "application/json",
+              "Cache-Control":
+                "no-store"
+            }
+          }
+        )
+      );
+    } catch (error) {
+      console.debug(
+        "保存文件树缓存失败：",
+        error
+      );
+    }
+  }
+
+  async function deleteDriveTreeCache(
+    rootId
+  ) {
+    if (
+      !("caches" in window) ||
+      !rootId
+    ) {
+      return;
+    }
+
+    try {
+      const cache =
+        await caches.open(
+          DRIVE_TREE_CACHE_NAME
+        );
+
+      await cache.delete(
+        driveTreeCacheRequest(
+          rootId
+        )
+      );
+    } catch (error) {
+      console.debug(
+        "删除文件树缓存失败：",
+        error
+      );
+    }
+  }
+
+  function countKnownFolders(rootNode) {
+    let count = 0;
+
+    function walk(node) {
+      if (
+        !node?.file ||
+        !isDriveFolder(
+          node.file
+        )
+      ) {
+        return;
+      }
+
+      count += 1;
+
+      for (
+        const child
+        of node.children || []
+      ) {
+        if (
+          isDriveFolder(
+            child.file
+          )
+        ) {
+          walk(child);
+        }
+      }
+    }
+
+    if (rootNode) {
+      walk(rootNode);
+    }
+
+    return count;
+  }
+
+  function countScannedFolders(
+    rootNode
+  ) {
+    let count = 0;
+
+    function walk(node) {
+      if (
+        !node?.file ||
+        !isDriveFolder(
+          node.file
+        )
+      ) {
+        return;
+      }
+
+      if (node._scanned) {
+        count += 1;
+      }
+
+      for (
+        const child
+        of node.children || []
+      ) {
+        if (
+          isDriveFolder(
+            child.file
+          )
+        ) {
+          walk(child);
+        }
+      }
+    }
+
+    if (rootNode) {
+      walk(rootNode);
+    }
+
+    return count;
+  }
+
+  function collectUnscannedFolderNodes(
+    rootNode
+  ) {
+    const result = [];
+
+    function walk(node) {
+      if (
+        !node?.file ||
+        !isDriveFolder(
+          node.file
+        )
+      ) {
+        return;
+      }
+
+      if (!node._scanned) {
+        result.push(node);
+        return;
+      }
+
+      for (
+        const child
+        of node.children || []
+      ) {
+        if (
+          isDriveFolder(
+            child.file
+          )
+        ) {
+          walk(child);
+        }
+      }
+    }
+
+    if (rootNode) {
+      walk(rootNode);
+    }
+
+    return result;
+  }
+
+  function flattenImagesFromDriveTree(
+    rootNode
+  ) {
+    const result = [];
+
+    function walk(node) {
+      if (!node?.file) return;
+
+      for (
+        const child
+        of node.children || []
+      ) {
+        if (
+          isDriveFolder(
+            child.file
+          )
+        ) {
+          walk(child);
+        } else if (
+          isImageFile(
+            child.file
+          )
+        ) {
+          result.push(
+            child.file
+          );
+        }
+      }
+    }
+
+    if (rootNode) {
+      walk(rootNode);
+    }
+
+    return result;
+  }
+
   async function fetchDriveMetadata(fileId, accessToken, resourceKey = null) {
     const fields =
       "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata";
@@ -2866,7 +3178,19 @@ async function initServiceWorker() {
         includeItemsFromAllDrives: "true",
         fields:
           "nextPageToken,files(" +
-          driveListFields("videoMediaMetadata") +
+          [
+            "id",
+            "name",
+            "mimeType",
+            "size",
+            "thumbnailLink",
+            "resourceKey",
+            "parents",
+            "driveId",
+            "capabilities",
+            "videoMediaMetadata",
+            "imageMediaMetadata"
+          ].join(",") +
           ")"
       });
 
@@ -2904,12 +3228,16 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
-        if (isImageFile(file)) {
-          backgroundImageFiles.push(file);
-          continue;
-        }
+        file.resourceKey =
+          file.resourceKey ||
+          fileResourceKey(file.id) ||
+          null;
 
-        if (isDriveFolder(file) || isVideoFile(file)) {
+        if (
+          isDriveFolder(file) ||
+          isVideoFile(file) ||
+          isImageFile(file)
+        ) {
           allItems.push(file);
         }
       }
@@ -2947,18 +3275,50 @@ async function initServiceWorker() {
    * 递归建立 1433223 下的文件树。
    * 一次并发读取最多 4 个文件夹，兼顾速度和 Drive API 压力。
    */
-  async function buildVideoFolderTree(rootFolder, accessToken) {
-    const rootNode = {
-      file: rootFolder,
-      children: []
-    };
+  async function buildVideoFolderTree(
+    rootFolder,
+    accessToken,
+    seedTree = null,
+    onProgress = null
+  ) {
+    const rootNode =
+      (
+        seedTree &&
+        seedTree.file?.id ===
+          rootFolder.id
+      )
+        ? seedTree
+        : {
+            file: rootFolder,
+            children: [],
+            _scanned: false
+          };
 
-    const queue = [rootNode];
-    let scannedFolders = 0;
-    const MAX_FOLDERS = 5000;
+    const queue =
+      collectUnscannedFolderNodes(
+        rootNode
+      );
+
+    if (
+      !queue.length &&
+      !rootNode._scanned
+    ) {
+      queue.push(rootNode);
+    }
+
+    /*
+     * 不再把“已发现数量”当成总数。
+     * 队列为空时才代表真正扫描完成。
+     */
+    const MAX_FOLDERS = 20000;
+    const CONCURRENCY = 8;
 
     while (queue.length) {
-      const batch = queue.splice(0, 4);
+      const batch =
+        queue.splice(
+          0,
+          CONCURRENCY
+        );
 
       await Promise.all(
         batch.map(async node => {
@@ -2971,35 +3331,89 @@ async function initServiceWorker() {
           node.children =
             items.map(file => ({
               file,
-              children: []
+              children: [],
+              _scanned:
+                !isDriveFolder(
+                  file
+                )
             }));
 
-          for (const child of node.children) {
-            if (isDriveFolder(child.file)) {
-              queue.push(child);
+          node._scanned = true;
+
+          for (
+            const child
+            of node.children
+          ) {
+            if (
+              isDriveFolder(
+                child.file
+              )
+            ) {
+              queue.push(
+                child
+              );
             }
           }
 
-          scannedFolders += 1;
-
-          setStatus(
-            "正在读取 " +
-            (rootFolder.name || VIDEO_ROOT_FOLDER_NAME) +
-            " · " +
-            scannedFolders +
-            " 个文件夹"
-          );
+          if (
+            typeof onProgress ===
+            "function"
+          ) {
+            onProgress({
+              scanned:
+                countScannedFolders(
+                  rootNode
+                ),
+              discovered:
+                countKnownFolders(
+                  rootNode
+                ),
+              pending:
+                queue.length
+            });
+          }
         })
       );
 
-      if (scannedFolders + queue.length > MAX_FOLDERS) {
+      /*
+       * 每一批都 checkpoint。
+       * 第一次扫描过程中关闭网页，下次继续未扫描节点。
+       */
+      await saveDriveTreeCache(
+        rootFolder.id,
+        rootNode,
+        false
+      );
+
+      if (
+        countKnownFolders(
+          rootNode
+        ) > MAX_FOLDERS
+      ) {
         throw new Error(
-          "文件夹数量超过 " +
+          "已发现超过 " +
           MAX_FOLDERS +
-          "，为避免浏览器卡死已停止读取。"
+          " 个文件夹，为避免浏览器资源耗尽已停止扫描。"
         );
       }
+
+      /*
+       * 给主线程喘息，避免超大目录树持续占用 UI。
+       */
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            0
+          )
+      );
     }
+
+    await saveDriveTreeCache(
+      rootFolder.id,
+      rootNode,
+      true
+    );
 
     return rootNode;
   }
@@ -4507,6 +4921,198 @@ async function initServiceWorker() {
     "visibilitychange",
     syncDriveBackgroundPauseState
   );
+
+
+  function applyVideoTreeToUi(
+    tree,
+    openedFile
+  ) {
+    if (!tree) return;
+
+    videoTreeRoot = tree;
+
+    videoPlaylist =
+      flattenVideosFromTree(
+        videoTreeRoot
+      );
+
+    backgroundImageFiles =
+      flattenImagesFromDriveTree(
+        videoTreeRoot
+      );
+
+    if (
+      openedFile &&
+      !videoPlaylist.some(
+        file =>
+          file.id ===
+          openedFile.id
+      )
+    ) {
+      openedFile._playlistIndex =
+        0;
+
+      openedFile._folderPath =
+        videoRootFolder
+          ? videoRootFolder.name
+          : "";
+
+      videoPlaylist.unshift(
+        openedFile
+      );
+
+      videoPlaylist.forEach(
+        (file, index) =>
+          file._playlistIndex =
+            index
+      );
+    }
+
+    currentVideoIndex =
+      Math.max(
+        0,
+        videoPlaylist.findIndex(
+          file =>
+            file.id ===
+            currentFileId
+        )
+      );
+
+    expandOnlyPathToVideo(
+      videoTreeRoot,
+      currentFileId
+    );
+
+    videoPlaylistDomReady =
+      false;
+
+    renderVideoPlaylist();
+
+    const listButton =
+      document.getElementById(
+        "videoListBtn"
+      );
+
+    if (listButton) {
+      listButton.style.display =
+        (
+          videoTreeRoot ||
+          videoPlaylist.length > 1
+        )
+          ? "inline-block"
+          : "none";
+    }
+
+    if (
+      backgroundImageFiles.length
+    ) {
+      startDriveBackgroundSlideshow();
+    }
+
+    resetHotStandbyState(
+      true
+    );
+
+    scheduleAdjacentVideoPrime();
+  }
+
+  async function refreshVideoTreeInBackground(
+    openedFile,
+    {
+      force = false,
+      cachedPayload = null
+    } = {}
+  ) {
+    if (
+      !videoRootFolder ||
+      !currentAccessToken
+    ) {
+      return;
+    }
+
+    try {
+      if (force) {
+        await deleteDriveTreeCache(
+          videoRootFolder.id
+        );
+
+        cachedPayload = null;
+      }
+
+      const seedTree =
+        (
+          !force &&
+          cachedPayload &&
+          !cachedPayload.complete
+        )
+          ? cachedPayload.tree
+          : null;
+
+      setStatus(
+        force
+          ? "正在后台刷新 1433223 · 视频可继续播放"
+          : "正在后台建立 1433223 缓存 · 视频可继续播放"
+      );
+
+      const tree =
+        await buildVideoFolderTree(
+          videoRootFolder,
+          currentAccessToken,
+          seedTree,
+          progress => {
+            /*
+             * discovered 仍然只是“目前已发现”，
+             * 不是最终总数。
+             */
+            setStatus(
+              "后台扫描 1433223 · 已扫描 " +
+              progress.scanned +
+              " · 已发现 " +
+              progress.discovered +
+              " · 待扫描 " +
+              progress.pending +
+              " · 视频可继续播放"
+            );
+          }
+        );
+
+      applyVideoTreeToUi(
+        tree,
+        openedFile
+      );
+
+      setStatus(
+        "Original · 1433223 扫描完成 · 共 " +
+        countKnownFolders(tree) +
+        " 个文件夹"
+      );
+    } catch (error) {
+      console.warn(
+        "后台建立文件树缓存失败：",
+        error
+      );
+
+      setStatus(
+        "Original · 视频可播放 · 文件树后台扫描失败"
+      );
+    }
+  }
+
+  async function forceRefreshDriveTree() {
+    let openedFile =
+      videoPlaylist[
+        currentVideoIndex
+      ];
+
+    if (!openedFile) {
+      return;
+    }
+
+    await refreshVideoTreeInBackground(
+      openedFile,
+      { force: true }
+    );
+  }
 
   function renderVideoPlaylist() {
     const items =
@@ -7171,8 +7777,14 @@ function authorizeDrive() {
         throw new Error("当前文件不是可识别的视频文件。");
       }
 
+      let cachedTreePayload =
+        null;
+
       try {
-        setStatus("正在定位 " + VIDEO_ROOT_FOLDER_NAME);
+        setStatus(
+          "正在定位 " +
+          VIDEO_ROOT_FOLDER_NAME
+        );
 
         videoRootFolder =
           await findVideoRootFolder(
@@ -7181,46 +7793,73 @@ function authorizeDrive() {
           );
 
         if (videoRootFolder) {
-          setStatus(
-            "正在读取 " +
-            (videoRootFolder.name || VIDEO_ROOT_FOLDER_NAME) +
-            " 文件树"
-          );
-
-          backgroundImageFiles = [];
-
-          videoTreeRoot =
-            await buildVideoFolderTree(
-              videoRootFolder,
-              accessToken
+          cachedTreePayload =
+            await loadDriveTreeCache(
+              videoRootFolder.id
             );
+
+          if (
+            cachedTreePayload?.tree
+          ) {
+            /*
+             * 完整缓存：不再递归请求 Drive。
+             * 部分缓存：先用已有内容，后台继续。
+             */
+            applyVideoTreeToUi(
+              cachedTreePayload.tree,
+              openedFile
+            );
+
+            setStatus(
+              cachedTreePayload.complete
+                ? "已从缓存载入 1433223 · 共 " +
+                  countKnownFolders(
+                    cachedTreePayload.tree
+                  ) +
+                  " 个文件夹"
+                : "已载入部分文件树缓存 · 后台继续扫描"
+            );
+          } else {
+            /*
+             * 首次无缓存：
+             * 当前视频先播放，不等整个目录扫描完成。
+             */
+            videoTreeRoot =
+              null;
+
+            videoPlaylist =
+              [openedFile];
+
+            backgroundImageFiles =
+              [];
+          }
+        } else {
+          videoTreeRoot =
+            null;
 
           videoPlaylist =
-            flattenVideosFromTree(
-              videoTreeRoot
-            );
+            [openedFile];
 
-          /*
-           * 初始不要展开所有子文件夹。
-           * 只展开当前从 Drive 打开的目标视频所在路径。
-           */
-          expandOnlyPathToVideo(
-            videoTreeRoot,
-            openedFile.id
-          );
-        } else {
-          videoTreeRoot = null;
-          videoPlaylist = [openedFile];
+          backgroundImageFiles =
+            [];
         }
       } catch (error) {
         console.warn(
-          "读取递归视频文件树失败，退回单视频模式：",
+          "读取文件树缓存失败，先进入单视频模式：",
           error
         );
 
-        videoTreeRoot = null;
-        videoRootFolder = null;
-        videoPlaylist = [openedFile];
+        videoTreeRoot =
+          null;
+
+        videoRootFolder =
+          null;
+
+        videoPlaylist =
+          [openedFile];
+
+        backgroundImageFiles =
+          [];
       }
 
       currentVideoIndex =
@@ -7259,7 +7898,29 @@ function authorizeDrive() {
         true
       );
 
-      startDriveBackgroundSlideshow();
+      if (
+        backgroundImageFiles.length
+      ) {
+        startDriveBackgroundSlideshow();
+      }
+
+      /*
+       * 只有“没有完整缓存”时后台继续扫描。
+       * 这里故意不 await。
+       */
+      if (
+        videoRootFolder &&
+        !cachedTreePayload?.complete
+      ) {
+        refreshVideoTreeInBackground(
+          openedFile,
+          {
+            force: false,
+            cachedPayload:
+              cachedTreePayload
+          }
+        );
+      }
     } catch (err) {
       console.error(err);
       setStatus("读取失败");

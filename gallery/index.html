@@ -500,7 +500,7 @@
       <div id="error"></div>
     </section>
     <section id="gallery">
-      <div class="gallery-head"><h1 id="galleryTitle">1433223 · 原图文件树</h1><div id="count"></div></div>
+      <div class="gallery-head"><h1 id="galleryTitle">1433223 · 原图文件树</h1><div style="display:flex;align-items:center;gap:10px"><div id="count"></div><button class="icon-btn" style="width:auto;padding:0 12px;font-size:13px" onclick="forceRefreshGalleryTree()" title="只有 Drive 文件发生变化时才需要刷新">刷新列表</button></div></div>
       <div id="grid"></div>
     </section>
   </main>
@@ -775,6 +775,93 @@ async function findGalleryRootFolder(openedFile) {
   return matched || firstParent;
 }
 
+
+/* ================================================================
+ * Persistent 1433223 Tree Cache · shared with video page
+ * ================================================================ */
+const DRIVE_TREE_CACHE_NAME = "drive-original-player-tree-cache-v3";
+const DRIVE_TREE_CACHE_VERSION = 3;
+
+function driveTreeCacheRequest(rootId) {
+  return new Request(
+    location.origin + "/__drive_original_player_tree_cache__/v3/" + encodeURIComponent(rootId),
+    { method: "GET" }
+  );
+}
+
+async function loadDriveTreeCache(rootId) {
+  if (!("caches" in window) || !rootId) return null;
+  try {
+    const cache = await caches.open(DRIVE_TREE_CACHE_NAME);
+    const response = await cache.match(driveTreeCacheRequest(rootId));
+    if (!response) return null;
+    const payload = await response.json();
+    if (!payload || payload.version !== DRIVE_TREE_CACHE_VERSION || payload.rootId !== rootId || !payload.tree) return null;
+    return payload;
+  } catch (error) {
+    console.debug("读取 Gallery 文件树缓存失败：", error);
+    return null;
+  }
+}
+
+async function saveDriveTreeCache(rootId, tree, complete = false) {
+  if (!("caches" in window) || !rootId || !tree) return;
+  try {
+    const cache = await caches.open(DRIVE_TREE_CACHE_NAME);
+    await cache.put(
+      driveTreeCacheRequest(rootId),
+      new Response(JSON.stringify({
+        version: DRIVE_TREE_CACHE_VERSION,
+        rootId,
+        complete: !!complete,
+        savedAt: Date.now(),
+        tree
+      }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } })
+    );
+  } catch (error) {
+    console.debug("保存 Gallery 文件树缓存失败：", error);
+  }
+}
+
+async function deleteDriveTreeCache(rootId) {
+  if (!("caches" in window) || !rootId) return;
+  try {
+    const cache = await caches.open(DRIVE_TREE_CACHE_NAME);
+    await cache.delete(driveTreeCacheRequest(rootId));
+  } catch (error) {
+    console.debug("删除 Gallery 文件树缓存失败：", error);
+  }
+}
+
+function collectUnscannedFolderNodes(rootNode) {
+  const result = [];
+  function walk(node) {
+    if (!node?.file || !isDriveFolder(node.file)) return;
+    if (!node._scanned) {
+      result.push(node);
+      return;
+    }
+    for (const child of node.children || []) {
+      if (isDriveFolder(child.file)) walk(child);
+    }
+  }
+  walk(rootNode);
+  return result;
+}
+
+function countDriveTreeFolders(rootNode) {
+  let count = 0;
+  function walk(node) {
+    if (!node?.file || !isDriveFolder(node.file)) return;
+    count += 1;
+    for (const child of node.children || []) {
+      if (isDriveFolder(child.file)) walk(child);
+    }
+  }
+  if (rootNode) walk(rootNode);
+  return count;
+}
+
 async function listGalleryTreeChildren(folderFile) {
   const allItems = [];
   let pageToken = null;
@@ -800,6 +887,7 @@ async function listGalleryTreeChildren(folderFile) {
             "thumbnailLink",
             "capabilities",
             "imageMediaMetadata",
+            "videoMediaMetadata",
             "resourceKey",
             "parents",
             "driveId"
@@ -863,7 +951,8 @@ async function listGalleryTreeChildren(folderFile) {
 
       if (
         isDriveFolder(file) ||
-        isImageFile(file)
+        isImageFile(file) ||
+        (file.mimeType && file.mimeType.startsWith("video/"))
       ) {
         allItems.push(file);
       }
@@ -902,64 +991,42 @@ async function listGalleryTreeChildren(folderFile) {
   return allItems;
 }
 
-async function buildGalleryFolderTree(rootFolder) {
-  const rootNode = {
-    file: rootFolder,
-    children: []
-  };
+async function buildGalleryFolderTree(rootFolder, seedTree = null, onProgress = null) {
+  const rootNode =
+    seedTree && seedTree.file?.id === rootFolder.id
+      ? seedTree
+      : { file: rootFolder, children: [], _scanned: false };
 
-  const queue = [rootNode];
-  let scannedFolders = 0;
-  const MAX_FOLDERS = 5000;
+  const queue = collectUnscannedFolderNodes(rootNode);
+  if (!queue.length && !rootNode._scanned) queue.push(rootNode);
+
+  const MAX_FOLDERS = 20000;
+  const CONCURRENCY = 8;
 
   while (queue.length) {
-    const batch = queue.splice(0, 4);
-
+    const batch = queue.splice(0, CONCURRENCY);
     await Promise.all(
       batch.map(async node => {
-        const items =
-          await listGalleryTreeChildren(
-            node.file
-          );
-
-        node.children =
-          items.map(file => ({
-            file,
-            children: []
-          }));
-
+        const items = await listGalleryTreeChildren(node.file);
+        node.children = items.map(file => ({
+          file,
+          children: [],
+          _scanned: !isDriveFolder(file)
+        }));
+        node._scanned = true;
         for (const child of node.children) {
-          if (isDriveFolder(child.file)) {
-            queue.push(child);
-          }
+          if (isDriveFolder(child.file)) queue.push(child);
         }
-
-        scannedFolders += 1;
-
-        setStatus(
-          "正在读取 " +
-          (rootFolder.name ||
-            GALLERY_ROOT_FOLDER_NAME) +
-          " · " +
-          scannedFolders +
-          " 个文件夹"
-        );
+        if (typeof onProgress === "function") onProgress(countDriveTreeFolders(rootNode), queue.length);
       })
     );
-
-    if (
-      scannedFolders +
-        queue.length >
-      MAX_FOLDERS
-    ) {
-      throw new Error(
-        "文件夹数量超过 " +
-        MAX_FOLDERS +
-        "，为避免浏览器卡死已停止读取。"
-      );
+    await saveDriveTreeCache(rootFolder.id, rootNode, false);
+    if (countDriveTreeFolders(rootNode) > MAX_FOLDERS) {
+      throw new Error("文件夹数量超过 " + MAX_FOLDERS + "，为避免浏览器卡死已停止读取。");
     }
   }
 
+  await saveDriveTreeCache(rootFolder.id, rootNode, true);
   return rootNode;
 }
 
@@ -1533,6 +1600,56 @@ document.addEventListener(
   "visibilitychange",
   syncGalleryBackgroundPauseState
 );
+
+
+function applyGalleryTreeToUi(tree, openedFile) {
+  if (!tree) return;
+  galleryTreeRoot = tree;
+  galleryFiles = flattenImagesFromTree(galleryTreeRoot);
+
+  if (openedFile && !galleryFiles.some(file => file.id === openedFile.id)) {
+    openedFile._galleryIndex = 0;
+    openedFile._folderPath = galleryRootFolder ? galleryRootFolder.name : "";
+    galleryFiles.unshift(openedFile);
+    galleryFiles.forEach((file, index) => file._galleryIndex = index);
+  }
+
+  currentIndex = Math.max(0, galleryFiles.findIndex(file => file.id === driveIds[0]));
+  expandedGalleryFolders.clear();
+  expandOnlyPathToImage(galleryTreeRoot, driveIds[0]);
+  renderGallery();
+  if (galleryFiles.length) startGalleryBackgroundSlideshow();
+}
+
+async function refreshGalleryTreeInBackground(openedFile, { force = false, cachedPayload = null } = {}) {
+  if (!galleryRootFolder || !currentAccessToken) return;
+  try {
+    if (force) {
+      await deleteDriveTreeCache(galleryRootFolder.id);
+      cachedPayload = null;
+    }
+    const seedTree = (!force && cachedPayload && !cachedPayload.complete) ? cachedPayload.tree : null;
+    setStatus(force ? "正在后台刷新 1433223 · 当前图片可正常查看" : "正在后台建立 1433223 缓存 · 当前图片可正常查看");
+    const tree = await buildGalleryFolderTree(
+      galleryRootFolder,
+      seedTree,
+      (known, pending) => setStatus(
+        "后台扫描 1433223 · 已发现 " + known + " · 待扫描 " + pending + "（已发现数量不是最终总数）"
+      )
+    );
+    applyGalleryTreeToUi(tree, openedFile);
+    setStatus("Original · 文件树缓存完成 · " + countDriveTreeFolders(tree) + " 个文件夹");
+  } catch (error) {
+    console.warn("Gallery 后台建立缓存失败：", error);
+    setStatus("Original · 当前图片可查看 · 后台缓存失败");
+  }
+}
+
+async function forceRefreshGalleryTree() {
+  const openedFile = galleryFiles[currentIndex] || null;
+  if (!openedFile) return;
+  await refreshGalleryTreeInBackground(openedFile, { force: true });
+}
 
 function renderGallery() {
   const grid =
@@ -2845,39 +2962,31 @@ window.addEventListener("load", async () => {
       );
     }
 
+    let cachedTreePayload = null;
+
     try {
-      galleryRootFolder =
-        await findGalleryRootFolder(
-          openedFile
-        );
+      galleryRootFolder = await findGalleryRootFolder(openedFile);
 
       if (galleryRootFolder) {
-        setStatus(
-          "正在读取 " +
-          (galleryRootFolder.name ||
-            GALLERY_ROOT_FOLDER_NAME) +
-          " 文件树"
-        );
-
-        galleryTreeRoot =
-          await buildGalleryFolderTree(
-            galleryRootFolder
+        cachedTreePayload = await loadDriveTreeCache(galleryRootFolder.id);
+        if (cachedTreePayload?.tree) {
+          galleryTreeRoot = cachedTreePayload.tree;
+          galleryFiles = flattenImagesFromTree(galleryTreeRoot);
+          setStatus(
+            cachedTreePayload.complete
+              ? "已从本地缓存载入 1433223 · " + countDriveTreeFolders(galleryTreeRoot) + " 个文件夹"
+              : "已载入部分缓存 · 后台继续建立"
           );
-
-        galleryFiles =
-          flattenImagesFromTree(
-            galleryTreeRoot
-          );
+        } else {
+          galleryTreeRoot = null;
+          galleryFiles = [openedFile];
+        }
       } else {
         galleryTreeRoot = null;
         galleryFiles = [openedFile];
       }
     } catch (treeError) {
-      console.warn(
-        "读取递归图片文件树失败，退回单图片模式：",
-        treeError
-      );
-
+      console.warn("读取 Gallery 缓存失败，先显示当前图片：", treeError);
       galleryTreeRoot = null;
       galleryRootFolder = null;
       galleryFiles = [openedFile];
@@ -2926,7 +3035,14 @@ window.addEventListener("load", async () => {
     }
 
     renderGallery();
-    startGalleryBackgroundSlideshow();
+    if (galleryFiles.length > 1) startGalleryBackgroundSlideshow();
+
+    if (galleryRootFolder && !cachedTreePayload?.complete) {
+      refreshGalleryTreeInBackground(openedFile, {
+        force: false,
+        cachedPayload: cachedTreePayload
+      });
+    }
 
     requestAnimationFrame(() => {
       const activeCard =
