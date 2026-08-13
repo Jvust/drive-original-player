@@ -1142,83 +1142,397 @@ function originalUrl(file, retryValue = null) {
 
 function shuffleGalleryBackgrounds(files) {
   const copy = files.slice();
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
+
+  for (
+    let i = copy.length - 1;
+    i > 0;
+    i--
+  ) {
+    const j =
+      Math.floor(
+        Math.random() *
+        (i + 1)
+      );
+
+    [copy[i], copy[j]] =
+      [copy[j], copy[i]];
   }
+
   return copy;
 }
 
-function scheduleGalleryBackgroundNext(delay = 5000) {
-  clearTimeout(galleryBgTimer);
-  galleryBgTimer = setTimeout(showNextGalleryBackground, delay);
+const GALLERY_BACKGROUND_INTERVAL_MS =
+  10000;
+
+const GALLERY_BACKGROUND_THUMB_SIZE =
+  1920;
+
+function getGalleryBackgroundThumbnailUrl(
+  file,
+  size =
+    GALLERY_BACKGROUND_THUMB_SIZE
+) {
+  const raw =
+    file &&
+    file.thumbnailLink
+      ? String(
+          file.thumbnailLink
+        )
+      : "";
+
+  if (!raw) {
+    return null;
+  }
+
+  if (
+    /=s\d+(?:-c)?$/i.test(raw)
+  ) {
+    return raw.replace(
+      /=s\d+(?:-c)?$/i,
+      `=s${size}`
+    );
+  }
+
+  return raw;
+}
+
+function preloadGalleryBackgroundThumbnail(
+  url,
+  timeout = 8000
+) {
+  return new Promise(
+    (resolve, reject) => {
+      if (!url) {
+        reject(
+          new Error(
+            "没有可用的 Drive thumbnailLink"
+          )
+        );
+
+        return;
+      }
+
+      const img =
+        new Image();
+
+      let settled = false;
+
+      const finish =
+        (ok, error) => {
+          if (settled) return;
+
+          settled = true;
+          clearTimeout(timer);
+
+          img.onload = null;
+          img.onerror = null;
+
+          if (ok) {
+            resolve(url);
+          } else {
+            reject(
+              error ||
+              new Error(
+                "Gallery 背景缩略图加载失败"
+              )
+            );
+          }
+        };
+
+      img.decoding =
+        "async";
+
+      img.referrerPolicy =
+        "no-referrer";
+
+      img.onload =
+        () => finish(true);
+
+      img.onerror =
+        () =>
+          finish(
+            false,
+            new Error(
+              "Gallery 背景缩略图加载失败"
+            )
+          );
+
+      const timer =
+        setTimeout(
+          () =>
+            finish(
+              false,
+              new Error(
+                "Gallery 背景缩略图加载超时"
+              )
+            ),
+          timeout
+        );
+
+      img.src = url;
+    }
+  );
+}
+
+function isGalleryBackgroundPaused() {
+  if (document.hidden) {
+    return true;
+  }
+
+  /*
+   * 正在观看原图时背景完全暂停。
+   */
+  const viewer =
+    document.getElementById(
+      "viewer"
+    );
+
+  return !!(
+    viewer &&
+    viewer.classList.contains(
+      "open"
+    )
+  );
+}
+
+function scheduleGalleryBackgroundNext(
+  delay =
+    GALLERY_BACKGROUND_INTERVAL_MS
+) {
+  clearTimeout(
+    galleryBgTimer
+  );
+
+  galleryBgTimer =
+    setTimeout(
+      showNextGalleryBackground,
+      delay
+    );
+}
+
+function pauseGalleryBackgroundSlideshow() {
+  clearTimeout(
+    galleryBgTimer
+  );
+
+  galleryBgTimer = null;
+}
+
+function resumeGalleryBackgroundSlideshow(
+  delay =
+    GALLERY_BACKGROUND_INTERVAL_MS
+) {
+  if (
+    !galleryFiles.length ||
+    isGalleryBackgroundPaused()
+  ) {
+    return;
+  }
+
+  scheduleGalleryBackgroundNext(
+    delay
+  );
 }
 
 async function showNextGalleryBackground() {
-  if (galleryBgPending || !galleryFiles.length || document.hidden) {
-    scheduleGalleryBackgroundNext(1000);
+  if (
+    galleryBgPending ||
+    !galleryFiles.length
+  ) {
+    scheduleGalleryBackgroundNext(
+      1000
+    );
+
+    return;
+  }
+
+  if (
+    isGalleryBackgroundPaused()
+  ) {
+    scheduleGalleryBackgroundNext(
+      1000
+    );
+
     return;
   }
 
   galleryBgPending = true;
 
   try {
-    if (!galleryBgQueue.length) {
-      galleryBgQueue = shuffleGalleryBackgrounds(galleryFiles);
+    let thumbnailUrl = null;
+
+    for (
+      let attempt = 0;
+      attempt < 8;
+      attempt++
+    ) {
+      if (
+        !galleryBgQueue.length
+      ) {
+        galleryBgQueue =
+          shuffleGalleryBackgrounds(
+            galleryFiles
+          );
+      }
+
+      const file =
+        galleryBgQueue.shift();
+
+      thumbnailUrl =
+        getGalleryBackgroundThumbnailUrl(
+          file
+        );
+
+      if (thumbnailUrl) {
+        break;
+      }
     }
 
-    const file = galleryBgQueue.shift();
-    const response = await fetch(originalUrl(file), { cache: "no-store" });
+    if (!thumbnailUrl) {
+      scheduleGalleryBackgroundNext(
+        GALLERY_BACKGROUND_INTERVAL_MS
+      );
 
-    if (!response.ok) {
-      throw new Error("HTTP " + response.status);
+      return;
     }
 
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
+    await preloadGalleryBackgroundThumbnail(
+      thumbnailUrl
+    );
 
-    galleryBgHiddenLayer.style.backgroundImage = `url("${objectUrl}")`;
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    /*
+     * 如果加载过程中打开了原图，
+     * 不执行背景切换。
+     */
+    if (
+      isGalleryBackgroundPaused()
+    ) {
+      scheduleGalleryBackgroundNext(
+        GALLERY_BACKGROUND_INTERVAL_MS
+      );
 
-    galleryBgHiddenLayer.classList.add("is-visible");
-    galleryBgVisibleLayer.classList.remove("is-visible");
-
-    const oldLayer = galleryBgVisibleLayer;
-    galleryBgVisibleLayer = galleryBgHiddenLayer;
-    galleryBgHiddenLayer = oldLayer;
-
-    const oldUrl = galleryBgVisibleObjectUrl;
-    galleryBgVisibleObjectUrl = objectUrl;
-
-    if (oldUrl) {
-      setTimeout(() => {
-        try { URL.revokeObjectURL(oldUrl); } catch (_) {}
-      }, 900);
+      return;
     }
 
-    scheduleGalleryBackgroundNext(5000);
+    galleryBgHiddenLayer
+      .style
+      .backgroundImage =
+        `url("${thumbnailUrl}")`;
+
+    await new Promise(
+      resolve =>
+        requestAnimationFrame(
+          () =>
+            requestAnimationFrame(
+              resolve
+            )
+        )
+    );
+
+    galleryBgHiddenLayer
+      .classList
+      .add(
+        "is-visible"
+      );
+
+    galleryBgVisibleLayer
+      .classList
+      .remove(
+        "is-visible"
+      );
+
+    const oldLayer =
+      galleryBgVisibleLayer;
+
+    galleryBgVisibleLayer =
+      galleryBgHiddenLayer;
+
+    galleryBgHiddenLayer =
+      oldLayer;
+
+    galleryBgVisibleObjectUrl =
+      null;
+
+    scheduleGalleryBackgroundNext(
+      GALLERY_BACKGROUND_INTERVAL_MS
+    );
   } catch (error) {
-    console.debug("Gallery 背景轮播失败：", error);
-    scheduleGalleryBackgroundNext(1600);
+    console.debug(
+      "Gallery 背景缩略图轮播失败：",
+      error
+    );
+
+    scheduleGalleryBackgroundNext(
+      2500
+    );
   } finally {
     galleryBgPending = false;
   }
 }
 
 function startGalleryBackgroundSlideshow() {
-  const a = document.getElementById("pageBgSlideA");
-  const b = document.getElementById("pageBgSlideB");
-  if (!a || !b || !galleryFiles.length) return;
+  pauseGalleryBackgroundSlideshow();
+
+  const a =
+    document.getElementById(
+      "pageBgSlideA"
+    );
+
+  const b =
+    document.getElementById(
+      "pageBgSlideB"
+    );
+
+  if (
+    !a ||
+    !b ||
+    !galleryFiles.length
+  ) {
+    return;
+  }
 
   galleryBgVisibleLayer = a;
   galleryBgHiddenLayer = b;
   galleryBgQueue = [];
-  a.style.backgroundImage = "none";
-  b.style.backgroundImage = "none";
-  a.classList.add("is-visible");
-  b.classList.remove("is-visible");
+
+  a.style.backgroundImage =
+    "none";
+
+  b.style.backgroundImage =
+    "none";
+
+  a.classList.add(
+    "is-visible"
+  );
+
+  b.classList.remove(
+    "is-visible"
+  );
+
   showNextGalleryBackground();
 }
+
+function syncGalleryBackgroundPauseState() {
+  if (
+    isGalleryBackgroundPaused()
+  ) {
+    pauseGalleryBackgroundSlideshow();
+    return;
+  }
+
+  /*
+   * 关闭原图查看器以后，
+   * 从完整 10 秒重新计时。
+   */
+  resumeGalleryBackgroundSlideshow(
+    GALLERY_BACKGROUND_INTERVAL_MS
+  );
+}
+
+document.addEventListener(
+  "visibilitychange",
+  syncGalleryBackgroundPauseState
+);
 
 function renderGallery() {
   const grid =
@@ -1957,6 +2271,13 @@ async function showViewerImage(index) {
 
 function openViewer(index) {
   const viewer = document.getElementById("viewer");
+
+  /*
+   * 打开原图前先暂停背景轮播，
+   * 避免原图加载期间仍发生装饰背景请求/切换。
+   */
+  pauseGalleryBackgroundSlideshow();
+
   viewer.classList.add("open");
   viewer.classList.remove("viewer-ui-hidden");
   viewer.setAttribute("aria-hidden","false");
@@ -1980,6 +2301,13 @@ function closeViewer() {
   const hqCanvas = document.getElementById("viewerHQCanvas");
   if (hqCanvas) hqCanvas.classList.remove("active");
   resetZoom();
+
+  /*
+   * 退出原图查看后，从完整 10 秒重新开始背景计时。
+   */
+  resumeGalleryBackgroundSlideshow(
+    GALLERY_BACKGROUND_INTERVAL_MS
+  );
 }
 function showPrev() {
   lastNavigationDirection = -1;

@@ -2266,6 +2266,12 @@ async function toggleWebFullscreen() {
 
 function updateWebFullscreenButton() {
   const fullscreen = !!getFullscreenElement();
+
+  /*
+   * 视频全屏期间背景停止更换；
+   * 退出全屏后重新从 10 秒开始计时。
+   */
+  syncDriveBackgroundPauseState();
   const button = document.getElementById("webFullscreenBtn");
   const fab = document.getElementById("fullscreenFab");
   const gpuButton = document.getElementById("gpuFullscreenBtn");
@@ -3330,140 +3336,391 @@ async function initServiceWorker() {
 
   function shuffleBackgroundFiles(files) {
     const copy = files.slice();
-    for (let i = copy.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [copy[i], copy[j]] = [copy[j], copy[i]];
+
+    for (
+      let i = copy.length - 1;
+      i > 0;
+      i--
+    ) {
+      const j =
+        Math.floor(
+          Math.random() *
+          (i + 1)
+        );
+
+      [copy[i], copy[j]] =
+        [copy[j], copy[i]];
     }
+
     return copy;
   }
 
-  async function waitForBackgroundBandwidth() {
-    const player = document.getElementById("player");
+  const DRIVE_BACKGROUND_INTERVAL_MS =
+    10000;
 
-    // 播放正在缓冲时不和视频抢 Drive 带宽；稳定后继续 5 秒轮播。
-    if (
-      player &&
-      !player.paused &&
-      (
-        player.readyState < 3 ||
-        getBufferedAhead(player) < 4
-      )
-    ) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      return waitForBackgroundBandwidth();
-    }
-  }
+  const DRIVE_BACKGROUND_THUMB_SIZE =
+    1920;
 
-  async function prepareDriveBackgroundObjectUrl(file) {
-    if (!file || !file.id || !currentAccessToken) {
+  function getDriveBackgroundThumbnailUrl(
+    file,
+    size = DRIVE_BACKGROUND_THUMB_SIZE
+  ) {
+    const raw =
+      file &&
+      file.thumbnailLink
+        ? String(
+            file.thumbnailLink
+          )
+        : "";
+
+    if (!raw) {
       return null;
     }
 
-    await waitForBackgroundBandwidth();
-
-    const registration = await navigator.serviceWorker.ready;
-    const worker = navigator.serviceWorker.controller || registration.active;
-
-    if (!worker) return null;
-
-    await postWorkerMessage(
-      worker,
-      {
-        type: "SET_TOKEN",
-        token: currentAccessToken,
-        fileId: file.id,
-        fileSize: Number(file.size)
-      },
-      320
-    );
-
-    const response = await fetch(
-      getMediaUrlForFile(file),
-      {
-        cache: "no-store"
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(
-        "背景图片读取失败：HTTP " + response.status
+    /*
+     * Drive thumbnailLink 常见结尾：
+     * ...=s220
+     * ...=s220-c
+     *
+     * 背景只需要约 1920px 的轻量图，
+     * 不再读取 Drive 原图。
+     */
+    if (
+      /=s\d+(?:-c)?$/i.test(raw)
+    ) {
+      return raw.replace(
+        /=s\d+(?:-c)?$/i,
+        `=s${size}`
       );
     }
 
-    const blob = await response.blob();
-    if (!blob.size) return null;
-
-    return URL.createObjectURL(blob);
+    return raw;
   }
 
-  function scheduleDriveBackgroundNext(delay = 5000) {
-    clearTimeout(backgroundTimer);
-    backgroundTimer = setTimeout(showNextDriveBackground, delay);
+  function preloadDriveBackgroundThumbnail(
+    url,
+    timeout = 8000
+  ) {
+    return new Promise(
+      (resolve, reject) => {
+        if (!url) {
+          reject(
+            new Error(
+              "没有可用的 Drive thumbnailLink"
+            )
+          );
+
+          return;
+        }
+
+        const img =
+          new Image();
+
+        let settled = false;
+
+        const finish =
+          (ok, error) => {
+            if (settled) return;
+
+            settled = true;
+            clearTimeout(timer);
+
+            img.onload = null;
+            img.onerror = null;
+
+            if (ok) {
+              resolve(url);
+            } else {
+              reject(
+                error ||
+                new Error(
+                  "背景缩略图加载失败"
+                )
+              );
+            }
+          };
+
+        img.decoding =
+          "async";
+
+        img.referrerPolicy =
+          "no-referrer";
+
+        img.onload =
+          () => finish(true);
+
+        img.onerror =
+          () =>
+            finish(
+              false,
+              new Error(
+                "背景缩略图加载失败"
+              )
+            );
+
+        const timer =
+          setTimeout(
+            () =>
+              finish(
+                false,
+                new Error(
+                  "背景缩略图加载超时"
+                )
+              ),
+            timeout
+          );
+
+        img.src = url;
+      }
+    );
+  }
+
+  function isDriveBackgroundPaused() {
+    if (document.hidden) {
+      return true;
+    }
+
+    /*
+     * 视频进入网页全屏后：
+     * 完全暂停背景切换。
+     */
+    if (getFullscreenElement()) {
+      return true;
+    }
+
+    const player =
+      document.getElementById(
+        "player"
+      );
+
+    if (!player) {
+      return false;
+    }
+
+    /*
+     * 即使背景已改成轻量 thumbnail，
+     * 视频正在 Seek / Buffering / Rescue 启动时
+     * 仍然不让装饰性背景抢网络或解码资源。
+     */
+    if (
+      player.seeking ||
+      seekRescueActivation ||
+      (
+        !player.paused &&
+        (
+          player.readyState < 3 ||
+          getBufferedAhead(player) < 10
+        )
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function scheduleDriveBackgroundNext(
+    delay =
+      DRIVE_BACKGROUND_INTERVAL_MS
+  ) {
+    clearTimeout(
+      backgroundTimer
+    );
+
+    backgroundTimer =
+      setTimeout(
+        showNextDriveBackground,
+        delay
+      );
+  }
+
+  function pauseDriveBackgroundSlideshow() {
+    clearTimeout(
+      backgroundTimer
+    );
+
+    backgroundTimer = null;
+  }
+
+  function resumeDriveBackgroundSlideshow(
+    delay =
+      DRIVE_BACKGROUND_INTERVAL_MS
+  ) {
+    if (
+      !backgroundImageFiles.length ||
+      document.hidden
+    ) {
+      return;
+    }
+
+    scheduleDriveBackgroundNext(
+      delay
+    );
   }
 
   async function showNextDriveBackground() {
     if (
       backgroundPending ||
-      !backgroundImageFiles.length ||
-      document.hidden
+      !backgroundImageFiles.length
     ) {
-      scheduleDriveBackgroundNext(1000);
+      scheduleDriveBackgroundNext(
+        1000
+      );
+
+      return;
+    }
+
+    if (
+      isDriveBackgroundPaused()
+    ) {
+      /*
+       * 暂停状态只检查，不更换背景。
+       * 退出全屏/视频稳定后，再重新开始 10 秒计时。
+       */
+      scheduleDriveBackgroundNext(
+        1000
+      );
+
       return;
     }
 
     backgroundPending = true;
 
     try {
-      if (!backgroundShuffleQueue.length) {
-        backgroundShuffleQueue =
-          shuffleBackgroundFiles(backgroundImageFiles);
+      let nextFile = null;
+      let thumbnailUrl = null;
+
+      /*
+       * 最多尝试 8 张。
+       * 某些 Drive 图片可能没有 thumbnailLink，
+       * 直接跳过，不回退到原图下载。
+       */
+      for (
+        let attempt = 0;
+        attempt < 8;
+        attempt++
+      ) {
+        if (
+          !backgroundShuffleQueue.length
+        ) {
+          backgroundShuffleQueue =
+            shuffleBackgroundFiles(
+              backgroundImageFiles
+            );
+        }
+
+        nextFile =
+          backgroundShuffleQueue
+            .shift();
+
+        thumbnailUrl =
+          getDriveBackgroundThumbnailUrl(
+            nextFile
+          );
+
+        if (thumbnailUrl) {
+          break;
+        }
       }
 
-      const file = backgroundShuffleQueue.shift();
-      const objectUrl =
-        await prepareDriveBackgroundObjectUrl(file);
+      if (!thumbnailUrl) {
+        scheduleDriveBackgroundNext(
+          DRIVE_BACKGROUND_INTERVAL_MS
+        );
 
-      if (!objectUrl) {
-        scheduleDriveBackgroundNext(800);
         return;
       }
 
-      backgroundHiddenLayer.style.backgroundImage =
-        `url("${objectUrl}")`;
+      await preloadDriveBackgroundThumbnail(
+        thumbnailUrl
+      );
 
-      // 让浏览器先完成一次样式提交，再淡入。
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      /*
+       * 图片加载期间如果刚好进入全屏/Seek，
+       * 不执行切换。
+       */
+      if (
+        isDriveBackgroundPaused()
+      ) {
+        scheduleDriveBackgroundNext(
+          DRIVE_BACKGROUND_INTERVAL_MS
+        );
 
-      backgroundHiddenLayer.classList.add("is-visible");
-      backgroundVisibleLayer.classList.remove("is-visible");
-
-      const oldLayer = backgroundVisibleLayer;
-      backgroundVisibleLayer = backgroundHiddenLayer;
-      backgroundHiddenLayer = oldLayer;
-
-      const oldUrl = backgroundVisibleObjectUrl;
-      backgroundVisibleObjectUrl = objectUrl;
-
-      if (oldUrl) {
-        setTimeout(() => {
-          try { URL.revokeObjectURL(oldUrl); } catch (_) {}
-        }, 900);
+        return;
       }
 
-      scheduleDriveBackgroundNext(5000);
+      backgroundHiddenLayer
+        .style
+        .backgroundImage =
+          `url("${thumbnailUrl}")`;
+
+      await new Promise(
+        resolve =>
+          requestAnimationFrame(
+            () =>
+              requestAnimationFrame(
+                resolve
+              )
+          )
+      );
+
+      backgroundHiddenLayer
+        .classList
+        .add(
+          "is-visible"
+        );
+
+      backgroundVisibleLayer
+        .classList
+        .remove(
+          "is-visible"
+        );
+
+      const oldLayer =
+        backgroundVisibleLayer;
+
+      backgroundVisibleLayer =
+        backgroundHiddenLayer;
+
+      backgroundHiddenLayer =
+        oldLayer;
+
+      /*
+       * thumbnail URL 由浏览器 HTTP cache 管理，
+       * 不再创建 / revoke 大型原图 Blob URL。
+       */
+      backgroundVisibleObjectUrl =
+        null;
+
+      scheduleDriveBackgroundNext(
+        DRIVE_BACKGROUND_INTERVAL_MS
+      );
     } catch (error) {
-      console.debug("Drive 背景轮播读取失败：", error);
-      scheduleDriveBackgroundNext(1800);
+      console.debug(
+        "Drive 背景缩略图轮播失败：",
+        error
+      );
+
+      scheduleDriveBackgroundNext(
+        2500
+      );
     } finally {
       backgroundPending = false;
     }
   }
 
   function startDriveBackgroundSlideshow() {
-    clearTimeout(backgroundTimer);
+    pauseDriveBackgroundSlideshow();
 
-    const a = document.getElementById("pageBgSlideA");
-    const b = document.getElementById("pageBgSlideB");
+    const a =
+      document.getElementById(
+        "pageBgSlideA"
+      );
+
+    const b =
+      document.getElementById(
+        "pageBgSlideB"
+      );
 
     if (!a || !b) return;
 
@@ -3471,24 +3728,59 @@ async function initServiceWorker() {
     backgroundHiddenLayer = b;
     backgroundShuffleQueue = [];
 
-    a.style.backgroundImage = "none";
-    b.style.backgroundImage = "none";
-    a.classList.add("is-visible");
-    b.classList.remove("is-visible");
+    a.style.backgroundImage =
+      "none";
 
-    if (!backgroundImageFiles.length) {
-      setStatus("Original · 1433223 中没有可用于背景的图片");
+    b.style.backgroundImage =
+      "none";
+
+    a.classList.add(
+      "is-visible"
+    );
+
+    b.classList.remove(
+      "is-visible"
+    );
+
+    if (
+      !backgroundImageFiles.length
+    ) {
+      setStatus(
+        "Original · 1433223 中没有可用于背景的图片"
+      );
+
       return;
     }
 
+    /*
+     * 第一次允许立即出现一张随机背景；
+     * 后续固定每 10 秒切换。
+     */
     showNextDriveBackground();
   }
 
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && backgroundImageFiles.length) {
-      scheduleDriveBackgroundNext(350);
+  function syncDriveBackgroundPauseState() {
+    if (
+      isDriveBackgroundPaused()
+    ) {
+      pauseDriveBackgroundSlideshow();
+      return;
     }
-  });
+
+    /*
+     * 退出全屏 / 页面重新可见后，
+     * 从完整 10 秒开始重新计时，
+     * 不会一退出就立刻跳背景。
+     */
+    resumeDriveBackgroundSlideshow(
+      DRIVE_BACKGROUND_INTERVAL_MS
+    );
+  }
+
+  document.addEventListener(
+    "visibilitychange",
+    syncDriveBackgroundPauseState
+  );
 
   function renderVideoPlaylist() {
     const items =
