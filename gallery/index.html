@@ -500,13 +500,7 @@
       <div id="error"></div>
     </section>
     <section id="gallery">
-      <div class="gallery-head">
-        <h1 id="galleryTitle">1433223 · 原图文件树</h1>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div id="count"></div>
-          <button class="icon-btn" style="width:auto;padding:0 12px;font-size:13px" onclick="clearStableGalleryCache()" title="Drive 中新增、删除或移动图片后再刷新">刷新列表</button>
-        </div>
-      </div>
+      <div class="gallery-head"><h1 id="galleryTitle">1433223 · 原图文件树</h1><div id="count"></div></div>
       <div id="grid"></div>
     </section>
   </main>
@@ -779,86 +773,6 @@ async function findGalleryRootFolder(openedFile) {
   }
 
   return matched || firstParent;
-}
-
-
-/* ================================================================
- * Stable Gallery Cache · V13
- * ================================================================ */
-const STABLE_GALLERY_CACHE_NAME =
-  "drive-original-player-stable-cache-v1";
-
-function stableGalleryCacheRequest(rootId) {
-  return new Request(
-    location.origin +
-    "/__drive_original_player_stable_gallery_tree__/" +
-    encodeURIComponent(rootId),
-    { method: "GET" }
-  );
-}
-
-async function loadStableGalleryCache(rootId) {
-  if (!("caches" in window) || !rootId) return null;
-
-  try {
-    const cache = await caches.open(STABLE_GALLERY_CACHE_NAME);
-    const response = await cache.match(stableGalleryCacheRequest(rootId));
-    if (!response) return null;
-
-    const payload = await response.json();
-    if (
-      !payload ||
-      payload.version !== 1 ||
-      payload.rootId !== rootId ||
-      payload.complete !== true ||
-      !payload.tree
-    ) {
-      return null;
-    }
-    return payload;
-  } catch (error) {
-    console.debug("读取 Gallery 稳定缓存失败：", error);
-    return null;
-  }
-}
-
-async function saveStableGalleryCache(rootId, tree) {
-  if (!("caches" in window) || !rootId || !tree) return;
-
-  try {
-    const cache = await caches.open(STABLE_GALLERY_CACHE_NAME);
-    await cache.put(
-      stableGalleryCacheRequest(rootId),
-      new Response(
-        JSON.stringify({
-          version: 1,
-          rootId,
-          complete: true,
-          savedAt: Date.now(),
-          tree
-        }),
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store"
-          }
-        }
-      )
-    );
-  } catch (error) {
-    console.debug("保存 Gallery 稳定缓存失败：", error);
-  }
-}
-
-async function clearStableGalleryCache() {
-  try {
-    if (galleryRootFolder?.id && "caches" in window) {
-      const cache = await caches.open(STABLE_GALLERY_CACHE_NAME);
-      await cache.delete(stableGalleryCacheRequest(galleryRootFolder.id));
-    }
-  } catch (_) {}
-
-  location.reload();
 }
 
 async function listGalleryTreeChildren(folderFile) {
@@ -2938,50 +2852,22 @@ window.addEventListener("load", async () => {
         );
 
       if (galleryRootFolder) {
-        const cached =
-          await loadStableGalleryCache(
-            galleryRootFolder.id
+        setStatus(
+          "正在读取 " +
+          (galleryRootFolder.name ||
+            GALLERY_ROOT_FOLDER_NAME) +
+          " 文件树"
+        );
+
+        galleryTreeRoot =
+          await buildGalleryFolderTree(
+            galleryRootFolder
           );
 
-        if (cached) {
-          galleryTreeRoot = cached.tree;
-          galleryFiles = flattenImagesFromTree(galleryTreeRoot);
-
-          setStatus(
-            "已从本地缓存载入 " +
-            GALLERY_ROOT_FOLDER_NAME +
-            " · " +
-            galleryFiles.length +
-            " 张图片"
-          );
-        } else {
-          setStatus(
-            "首次建立 " +
-            (galleryRootFolder.name || GALLERY_ROOT_FOLDER_NAME) +
-            " 图片列表缓存…"
-          );
-
-          galleryTreeRoot =
-            await buildGalleryFolderTree(
-              galleryRootFolder
-            );
-
-          galleryFiles =
-            flattenImagesFromTree(
-              galleryTreeRoot
-            );
-
-          await saveStableGalleryCache(
-            galleryRootFolder.id,
+        galleryFiles =
+          flattenImagesFromTree(
             galleryTreeRoot
           );
-
-          setStatus(
-            "图片列表缓存建立完成 · " +
-            galleryFiles.length +
-            " 张"
-          );
-        }
       } else {
         galleryTreeRoot = null;
         galleryFiles = [openedFile];
@@ -2995,11 +2881,6 @@ window.addEventListener("load", async () => {
       galleryTreeRoot = null;
       galleryRootFolder = null;
       galleryFiles = [openedFile];
-
-      setStatus(
-        "Original · 图片列表读取失败 · " +
-        (treeError?.message || String(treeError))
-      );
     }
 
     if (
