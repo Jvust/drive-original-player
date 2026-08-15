@@ -776,9 +776,13 @@ async function streamDriveFile(request, url) {
 
   if (
     request.method === "GET" &&
-    parsedRange &&
-    parsedRange.start === 0
+    parsedRange
   ) {
+    /*
+     * V8 已经让 getPrimeResponse 支持缓存前缀中的任意 Range，
+     * 但旧 fetch 路径仍错误地只在 start===0 时调用它。
+     * V9 修正：只要请求落在已缓存片头范围内就直接内存命中。
+     */
     const primeResponse =
       getPrimeResponse(
         fileId,
