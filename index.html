@@ -3825,13 +3825,15 @@ async function initServiceWorker() {
 
     /*
      * 不让热备抢一个本来就快断流的当前视频。
-     * 4 秒以上前向缓冲即可启动下一条预热。
+     * 1.5 秒以上前向缓冲即可启动下一条预热——
+     * 门槛比原来的 4 秒更低，下一条视频可以更早开始预加载，
+     * 从而更快进入“可以热切”的状态。
      */
     if (
       !player.paused &&
       (
         player.readyState < 3 ||
-        getBufferedAhead(player) < 4
+        getBufferedAhead(player) < 1.5
       )
     ) {
       return false;
@@ -3842,7 +3844,7 @@ async function initServiceWorker() {
 
   function scheduleHotStandbyRetry(
     index,
-    delay = 1200
+    delay = 600
   ) {
     if (
       hotStandbyRetryTimer
@@ -4393,7 +4395,7 @@ async function initServiceWorker() {
         prepareHotStandby(
           currentVideoIndex + 1
         ),
-      650
+      300
     );
 
     return true;
@@ -4412,18 +4414,19 @@ async function initServiceWorker() {
           adjacentPrimeTimer = null;
           primeAdjacentVideos();
         },
-        180
+        80
       );
   }
 
   async function primeAdjacentVideos() {
     /*
-     * 后台目录仍在补全时，播放列表 index 还会变化。
-     * 等扫描结束再启动真实下一条 Hot Standby。
+     * 后台目录仍在补全时，播放列表 index 也可能跟着变化，
+     * 但 currentVideoIndex 会随每一批扫描结果同步更新，
+     * 所以这里不再等扫描完全结束才开始预热下一条。
+     * 如果扫描后期列表重排导致这次预热的目标不再匹配，
+     * isHotStandbyUsable() 会安全地判定它已失效并忽略，
+     * 不会播放出错——但不用再干等扫描完成，大目录下能明显更快进入可秒切状态。
      */
-    if (videoTreeScanInProgress) {
-      return;
-    }
 
     if (
       !serviceWorkerReady ||
@@ -5602,6 +5605,10 @@ async function initServiceWorker() {
         syncGpuCanvasSize();
         syncGpuMediaControls();
         updateDiagnostic();
+
+        // 元数据一到就开始尝试准备下一条（内部仍会检查是否稳定），
+        // 不用等到真正有画面帧的 loadeddata 才排队。
+        scheduleAdjacentVideoPrime();
       }
     );
 

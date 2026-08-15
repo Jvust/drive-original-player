@@ -11,13 +11,62 @@
 
 const MEDIA_PREFIX = "/drive-original-player/media/";
 const AUTH_STATE_CACHE = "drive-original-player-auth-v2";
-const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB：比旧版 16 MB 更适合 seek
+const CHUNK_SIZE = 8 * 1024 * 1024;        // 连续顺序播放稳定后的最大分块
+const SEEK_CHUNK_SIZE = 1.5 * 1024 * 1024; // 刚跳转（拖进度条 / 切视频）时的分块：更小，首屏更快出画面
+const RAMP_CHUNK_SIZE = 4 * 1024 * 1024;   // 确认是连续播放后的过渡分块
+const RANGE_JUMP_TOLERANCE = 256 * 1024;   // 判断“是否连续”的容差，避免浏览器的小幅重叠请求被误判为跳转
+const RANGE_STREAK_MAX_ENTRIES = 24;       // 记录“连续请求状态”的文件数量上限
 
 /*
- * 快速切换：只在内存中预热相邻视频前 2 MB。
+ * ============================================================
+ * 自适应分块：区分“接着往下播”和“刚拖完进度条 / 刚切视频”
+ * ============================================================
+ *
+ * 记录每个文件最近一次 Range 响应结束的字节位置。
+ * 如果这次请求的起点紧接着上次结束的位置，说明是正常顺序播放，
+ *   可以放心用更大的分块，减少请求次数、提高吞吐。
+ * 如果起点和上次结束位置不连续（发生了跳跃），说明用户刚拖动了
+ *   进度条，或者刚切换到另一个视频：这时用一个更小的分块，
+ *   让浏览器尽快拿到一小段可以解码播放的数据，缩短“卡在黑屏/转圈”的时间。
+ */
+const rangeStreaks = new Map();
+
+function touchRangeStreak(fileId, entry) {
+  if (rangeStreaks.has(fileId)) rangeStreaks.delete(fileId);
+  rangeStreaks.set(fileId, entry);
+
+  while (rangeStreaks.size > RANGE_STREAK_MAX_ENTRIES) {
+    const oldestKey = rangeStreaks.keys().next().value;
+    rangeStreaks.delete(oldestKey);
+  }
+}
+
+function pickChunkSizeForRequest(fileId, start) {
+  const info = rangeStreaks.get(fileId);
+
+  if (info) {
+    const expectedNext = info.lastEnd + 1;
+    const isContiguous =
+      Math.abs(start - expectedNext) <= RANGE_JUMP_TOLERANCE;
+
+    if (isContiguous) {
+      const streak = Math.min(info.streak + 1, 8);
+      return {
+        streak,
+        chunkSize: streak <= 1 ? RAMP_CHUNK_SIZE : CHUNK_SIZE
+      };
+    }
+  }
+
+  // 没有记录，或者位置发生跳跃：当作一次“跳转”处理。
+  return { streak: 0, chunkSize: SEEK_CHUNK_SIZE };
+}
+
+/*
+ * 快速切换：只在内存中预热相邻视频前 4 MB。
  * 不缓存整个视频，也不会降低原始画质。
  */
-const PRIME_BYTES = 2 * 1024 * 1024;
+const PRIME_BYTES = 4 * 1024 * 1024;
 const PRIME_MAX_ENTRIES = 4;
 const primeMediaCache = new Map();
 
@@ -417,7 +466,7 @@ self.addEventListener("fetch", event => {
   }
 });
 
-function parseSingleRange(rangeHeader, fileSize) {
+function parseSingleRange(rangeHeader, fileSize, fileId) {
   if (!rangeHeader) return null;
 
   // 多段 Range 对 HTMLVideoElement 几乎用不到。
@@ -451,16 +500,21 @@ function parseSingleRange(rangeHeader, fileSize) {
     }
 
     // 即使浏览器明确给了很大的 end，也只读取一个小块。
-    // 这是旧版没有处理好的地方。
+    // 具体多小取决于这次请求是不是紧接着上一次：
+    // 跳转（seek/切视频）用小分块尽快出画面，连续播放逐步放大分块。
+    const { streak, chunkSize } =
+      pickChunkSizeForRequest(fileId, start);
+
     const end = Math.min(
       requestedEnd,
-      start + CHUNK_SIZE - 1,
+      start + chunkSize - 1,
       fileSize - 1
     );
 
     return {
       start,
       end,
+      streak,
       header: `bytes=${start}-${end}`
     };
   }
@@ -627,7 +681,8 @@ async function streamDriveFile(request, url) {
     parsedRange =
       parseSingleRange(
         originalRange,
-        fileSize
+        fileSize,
+        fileId
       );
 
     if (parsedRange?.unsatisfiable) {
@@ -743,6 +798,11 @@ async function streamDriveFile(request, url) {
           1
         )
       );
+
+      touchRangeStreak(fileId, {
+        lastEnd: actualEnd,
+        streak: parsedRange.streak || 0
+      });
     }
 
     return new Response(
