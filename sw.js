@@ -14,12 +14,101 @@ const AUTH_STATE_CACHE = "drive-original-player-auth-v2";
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB：比旧版 16 MB 更适合 seek
 
 /*
- * 快速切换：只在内存中预热相邻视频前 2 MB。
- * 不缓存整个视频，也不会降低原始画质。
+ * V8 视频片头预加载：
+ *
+ * 页面会为后续 3 条视频请求约 2.5 秒片头。
+ * Service Worker 根据 Drive 的 fileSize + durationMillis
+ * 估算平均码率，再换算为需要缓存的字节数。
+ *
+ * 这是“约 2.5 秒”的字节级预读：
+ * MP4 的物理布局/关键帧位置可能让实际可直接播放时长略有差异。
  */
-const PRIME_BYTES = 2 * 1024 * 1024;
-const PRIME_MAX_ENTRIES = 4;
+const DEFAULT_PRIME_SECONDS = 2.5;
+const PRIME_FALLBACK_BYTES = 3 * 1024 * 1024;
+const PRIME_MIN_BYTES = 1 * 1024 * 1024;
+const PRIME_MAX_BYTES = 8 * 1024 * 1024;
+const PRIME_SAFETY_FACTOR = 1.35;
+const PRIME_CONTAINER_OVERHEAD = 384 * 1024;
+const PRIME_MAX_ENTRIES = 6;
 const primeMediaCache = new Map();
+
+function clampNumber(value, min, max) {
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      value
+    )
+  );
+}
+
+function estimatePrimeBytes({
+  fileSize,
+  durationMillis,
+  primeSeconds
+}) {
+  fileSize =
+    Number(fileSize);
+
+  durationMillis =
+    Number(durationMillis);
+
+  primeSeconds =
+    Number(primeSeconds);
+
+  if (
+    !Number.isFinite(primeSeconds) ||
+    primeSeconds <= 0
+  ) {
+    primeSeconds =
+      DEFAULT_PRIME_SECONDS;
+  }
+
+  let bytes =
+    PRIME_FALLBACK_BYTES;
+
+  if (
+    Number.isFinite(durationMillis) &&
+    durationMillis > 0 &&
+    Number.isFinite(fileSize) &&
+    fileSize > 0
+  ) {
+    const averageBytesPerMs =
+      fileSize /
+      durationMillis;
+
+    bytes =
+      (
+        averageBytesPerMs *
+        primeSeconds *
+        1000 *
+        PRIME_SAFETY_FACTOR
+      ) +
+      PRIME_CONTAINER_OVERHEAD;
+  }
+
+  bytes =
+    Math.ceil(
+      clampNumber(
+        bytes,
+        PRIME_MIN_BYTES,
+        PRIME_MAX_BYTES
+      )
+    );
+
+  if (
+    Number.isFinite(fileSize) &&
+    fileSize > 0
+  ) {
+    bytes =
+      Math.min(
+        bytes,
+        fileSize
+      );
+  }
+
+  return bytes;
+}
 
 // 不再只保存一个 currentFileId。
 // 批量播放/切换视频时，不同文件可以同时存在短暂的请求。
@@ -132,7 +221,9 @@ async function primeMediaFile({
   fileId,
   token,
   fileSize,
-  resourceKey
+  resourceKey,
+  durationMillis,
+  primeSeconds
 }) {
   fileId = String(fileId || "");
   fileSize = Number(fileSize);
@@ -146,18 +237,27 @@ async function primeMediaFile({
     return false;
   }
 
+  const requestedPrimeBytes =
+    estimatePrimeBytes({
+      fileSize,
+      durationMillis,
+      primeSeconds
+    });
+
   const existing =
     primeMediaCache.get(fileId);
 
   if (
     existing &&
     existing.token === token &&
-    existing.buffer?.byteLength > 0
+    existing.buffer?.byteLength >=
+      requestedPrimeBytes
   ) {
     touchPrimeCache(
       fileId,
       existing
     );
+
     return true;
   }
 
@@ -172,7 +272,7 @@ async function primeMediaFile({
   const end =
     Math.min(
       fileSize - 1,
-      PRIME_BYTES - 1
+      requestedPrimeBytes - 1
     );
 
   const driveURL =
@@ -236,7 +336,12 @@ async function primeMediaFile({
             "Content-Type"
           ) || "video/mp4",
         createdAt:
-          Date.now()
+          Date.now(),
+        primeBytes:
+          buffer.byteLength,
+        primeSeconds:
+          Number(primeSeconds) ||
+          DEFAULT_PRIME_SECONDS
       }
     );
 
@@ -257,7 +362,9 @@ function getPrimeResponse(
 ) {
   if (
     !parsedRange ||
-    parsedRange.start !== 0 ||
+    !Number.isFinite(
+      parsedRange.start
+    ) ||
     !Number.isFinite(
       parsedRange.end
     )
@@ -278,6 +385,19 @@ function getPrimeResponse(
     return null;
   }
 
+  const availableStart =
+    Math.max(
+      0,
+      parsedRange.start
+    );
+
+  if (
+    availableStart >=
+      entry.buffer.byteLength
+  ) {
+    return null;
+  }
+
   const availableEnd =
     Math.min(
       parsedRange.end,
@@ -285,7 +405,10 @@ function getPrimeResponse(
       fileSize - 1
     );
 
-  if (availableEnd < 0) {
+  if (
+    availableEnd <
+      availableStart
+  ) {
     return null;
   }
 
@@ -296,7 +419,7 @@ function getPrimeResponse(
 
   const slice =
     entry.buffer.slice(
-      0,
+      availableStart,
       availableEnd + 1
     );
 
@@ -313,7 +436,7 @@ function getPrimeResponse(
             slice.byteLength
           ),
         "Content-Range":
-          `bytes 0-${availableEnd}/${fileSize}`,
+          `bytes ${availableStart}-${availableEnd}/${fileSize}`,
         "Accept-Ranges":
           "bytes",
         "Cache-Control":
@@ -394,7 +517,11 @@ self.addEventListener("message", event => {
         fileSize:
           Number(data.fileSize),
         resourceKey:
-          data.resourceKey || null
+          data.resourceKey || null,
+        durationMillis:
+          Number(data.durationMillis),
+        primeSeconds:
+          Number(data.primeSeconds)
       })
         .then(ok => {
           reply({ ok });
