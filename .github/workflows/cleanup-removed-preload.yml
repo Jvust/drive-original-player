@@ -1,0 +1,49 @@
+name: Cleanup removed preload code
+
+on:
+  push:
+    paths:
+      - ".github/workflows/cleanup-removed-preload.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+
+      - name: Cleanup removed preload code
+        run: python .github/scripts/cleanup_removed_preload.py
+
+      - name: Verify JavaScript and preload code removal
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
+          if not scripts:
+              raise SystemExit("No inline script found")
+          Path("/tmp/player-inline.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/player-inline.js
+          node --check sw.js
+          git diff --check
+          ! grep -Eq 'hotStandby|preloadPlayer|PRIME_MEDIA|PRIME_SEEK|primeMediaCache|seekPrimeCache|getPrimeResponse|getSeekPrimeResponse|scheduleAdjacentVideoPrime|maybeScheduleAdjacentPrime|prefetchPlaylistItemOnHover|scheduleSeekScrubPrefetch' index.html
+          ! grep -Eq 'PRIME_MEDIA|PRIME_SEEK|primeMediaCache|seekPrimeCache|getPrimeResponse|getSeekPrimeResponse|primeMediaFile|primeSeekPosition' sw.js
+          grep -q 'preload="none"' index.html
+
+      - name: Commit cleanup and remove staging files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html sw.js
+          git rm .github/scripts/cleanup_removed_preload.py
+          git rm .github/workflows/cleanup-removed-preload.yml
+          git commit -m "Delete obsolete video preload code"
+          git push origin HEAD:main
