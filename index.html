@@ -29,15 +29,32 @@
      */
     .video-hot-standby {
       position: absolute !important;
-      left: 0 !important;
-      top: 0 !important;
-      width: 2px !important;
-      height: 2px !important;
-      max-height: 2px !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      max-height: none !important;
+      object-fit: contain !important;
       opacity: 0 !important;
-      visibility: hidden !important;
+      visibility: visible !important;
       pointer-events: none !important;
-      z-index: -1 !important;
+      z-index: 0 !important;
+    }
+
+    /*
+     * Hot Switch Visual Bridge
+     *
+     * 默认“平衡”模式由 WebGPU Canvas 覆盖原生 video。
+     * 热切时先把已经解码好的新 video 首帧直接露出来，
+     * 等新视频真正开始出帧以后再把 WebGPU Canvas 接回去。
+     * 这样用户不会看到旧 Canvas 卡住或黑屏等待。
+     */
+    #playerWrap.hot-switch-bridge #gpuCanvas {
+      opacity: 0 !important;
+    }
+
+    #playerWrap.gpu-active.hot-switch-bridge #player {
+      opacity: 1 !important;
+      pointer-events: none !important;
     }
 
     #videoStage {
@@ -1021,25 +1038,56 @@
   let hotStandbyLoading = false;
   let hotStandbyGeneration = 0;
   let hotStandbyRetryTimer = null;
+  let hotStandbyDecodedFrame = false;
+  let hotStandbyPrerollTime = 0;
   let lastHotSwitchUsed = false;
 
   /*
-   * 播放列表悬停/触摸预热：
-   * 鼠标划到某一条（或手指按下瞬间）就顺手让 SW 预热它开头 2MB，
-   * 不等真正点击。命中的话，点击那一刻就不用再等一次完整网络往返。
+   * V9：不再等 104 个文件夹全部扫描完才开始下一条预热。
+   * 先读取当前视频的直接父文件夹，尽早拿到同目录下一条。
+   */
+  let provisionalSiblingVideos = [];
+  let earlySiblingDiscoveryRunning = false;
+  let lastAdjacentPrimeSignature = "";
+  let adjacentPrimeDebounceTimer = null;
+
+  /*
+   * V8：后续 3 个视频片头预加载
+   *
+   * 每个目标约缓存前 2.5 秒：
+   * +1：先片头缓存，再继续完整 Hot Standby
+   * +2：片头缓存
+   * +3：片头缓存
+   *
+   * 顺序执行，避免三个 Range 请求同时抢当前视频带宽。
+   */
+  const VIDEO_PREFIX_PRELOAD_COUNT = 3;
+  const VIDEO_PREFIX_PRELOAD_SECONDS = 2.5;
+  let videoPrefixPrimeGeneration = 0;
+  let videoPrefixPrimeState = "待命";
+
+  /*
+   * V10 Hybrid · 列表悬停/触摸预热
+   *
+   * 复用 V9 的时长感知 PRIME_MEDIA，不退回固定 2MB。
+   * 桌面端鼠标移到视频项、触摸设备按下视频项时，提前预热该视频
+   * 约 2.5 秒片头；如果用户随后点击，就更容易直接命中 SW 内存缓存。
    */
   const hoverPrefetchedFileIds = new Set();
   const HOVER_PREFETCH_MAX_REMEMBERED = 40;
 
   /*
-   * 拖动进度条预热（Seek Scrub Prime，客户端一侧）：
-   * 拖动过程中按估算字节位置节流发送 PRIME_SEEK，让 SW 提前抓一小块。
-   * 松手真正 seek 时如果命中，就能省掉一次到 Google 的完整网络往返。
+   * V10 Hybrid · Seek Scrub Prime
+   *
+   * 拖动进度条过程中，按时间比例估算文件字节位置并向 SW 发 PRIME_SEEK。
+   * 这是启发式优化；非交织 MP4 可能估算不准，因此只做缓存提示，
+   * 绝不替代 V9 原有 Seek Rescue / 正常 Range 路径。
    */
   let seekPrefetchLastFireTime = 0;
   let seekPrefetchLastOffset = -1;
   let seekPrefetchPendingOffset = null;
   let seekPrefetchTrailingTimer = null;
+  let seekScrubPrimeState = "待命";
   const SEEK_PREFETCH_THROTTLE_MS = 220;
   const SEEK_PREFETCH_MIN_DELTA_BYTES = 512 * 1024;
 
@@ -2182,8 +2230,7 @@ function initGpuMediaControls() {
         }
 
         /*
-         * 还没松手就按当前拖动位置预热 SW 缓存（节流发送）。
-         * 松手真正 seek 时命中的话，能明显更快出画面。
+         * 用户尚未松手时先给目标位置做低风险启发式预热。
          */
         scheduleSeekScrubPrefetch(
           ratio
@@ -2554,14 +2601,29 @@ function buildDiagnosticText() {
       getSeekRescueDiagnosticText(),
     "视频热备：        " +
       (
-        hotStandbyReady
-          ? "下一条已 canplay · 可热切"
+        hotStandbyReady &&
+        hotStandbyDecodedFrame
+          ? (
+              "下一条首帧已解码 · " +
+              formatSeconds(
+                hotStandbyPrerollTime
+              ) +
+              " · 可真实热切"
+            )
           : (
               hotStandbyLoading
-                ? "正在预加载下一条"
+                ? "正在下载/预解码下一条"
                 : "待命"
             )
       ),
+    "片头预读：        " +
+      videoPrefixPrimeState,
+    "列表悬停预热：    " +
+      hoverPrefetchedFileIds.size +
+      " 条已提示",
+    "拖动位置预热：    " +
+      seekScrubPrimeState,
+    "预读策略：        后续3条 × 前2.5秒",
     "最近切换：        " +
       (
         lastHotSwitchUsed
@@ -2985,6 +3047,214 @@ async function initServiceWorker() {
     return allItems;
   }
 
+  function getForwardPrimeSignature() {
+    const ids = [];
+
+    for (
+      let offset = 0;
+      offset <=
+        VIDEO_PREFIX_PRELOAD_COUNT;
+      offset++
+    ) {
+      const file =
+        videoPlaylist[
+          currentVideoIndex +
+          offset
+        ];
+
+      ids.push(
+        file?.id || "-"
+      );
+    }
+
+    return ids.join("|");
+  }
+
+  function maybeScheduleAdjacentPrime(
+    force = false
+  ) {
+    const signature =
+      getForwardPrimeSignature();
+
+    if (
+      !force &&
+      signature ===
+        lastAdjacentPrimeSignature
+    ) {
+      return;
+    }
+
+    lastAdjacentPrimeSignature =
+      signature;
+
+    if (
+      adjacentPrimeDebounceTimer
+    ) {
+      clearTimeout(
+        adjacentPrimeDebounceTimer
+      );
+    }
+
+    adjacentPrimeDebounceTimer =
+      setTimeout(
+        () => {
+          adjacentPrimeDebounceTimer =
+            null;
+
+          scheduleAdjacentVideoPrime();
+        },
+        90
+      );
+  }
+
+  async function discoverCurrentFolderVideosEarly(
+    openedFile,
+    accessToken
+  ) {
+    if (
+      earlySiblingDiscoveryRunning ||
+      !openedFile ||
+      !accessToken
+    ) {
+      return;
+    }
+
+    const parentId =
+      Array.isArray(
+        openedFile.parents
+      )
+        ? openedFile.parents[0]
+        : null;
+
+    if (!parentId) {
+      return;
+    }
+
+    earlySiblingDiscoveryRunning =
+      true;
+
+    try {
+      const parent =
+        await fetchDriveMetadata(
+          parentId,
+          accessToken
+        );
+
+      if (
+        !parent ||
+        !isDriveFolder(parent)
+      ) {
+        return;
+      }
+
+      const items =
+        await listVideoTreeChildren(
+          parent,
+          accessToken
+        );
+
+      const videos =
+        items.filter(
+          file =>
+            isVideoFile(file)
+        );
+
+      const index =
+        videos.findIndex(
+          file =>
+            file.id ===
+            openedFile.id
+        );
+
+      if (index < 0) {
+        return;
+      }
+
+      provisionalSiblingVideos =
+        videos.slice();
+
+      provisionalSiblingVideos
+        .forEach(
+          (file, i) => {
+            file._playlistIndex =
+              i;
+
+            file._folderPath =
+              parent.name || "";
+          }
+        );
+
+      /*
+       * 全局树还没找到当前文件时，
+       * 先用“当前直接父文件夹”的视频做临时播放列表。
+       * 这样下一条同目录视频无需等 104 个文件夹读完。
+       */
+      const globalHasCurrent =
+        videoTreeRoot &&
+        flattenVideosFromTree(
+          videoTreeRoot
+        ).some(
+          file =>
+            file.id ===
+            openedFile.id
+        );
+
+      if (!globalHasCurrent) {
+        const activeId =
+          currentFileId ||
+          openedFile.id;
+
+        videoPlaylist =
+          provisionalSiblingVideos
+            .slice();
+
+        currentVideoIndex =
+          videoPlaylist.findIndex(
+            file =>
+              file.id ===
+              activeId
+          );
+
+        if (currentVideoIndex < 0) {
+          currentVideoIndex =
+            index;
+        }
+
+        videoPlaylistDomReady =
+          false;
+
+        const listBtn =
+          document.getElementById(
+            "videoListBtn"
+          );
+
+        if (
+          listBtn &&
+          videoPlaylist.length > 1
+        ) {
+          listBtn.style.display =
+            "inline-block";
+        }
+      }
+
+      /*
+       * 立即启动 +1 真首帧预解码，
+       * 不等待 1433223 全树完成。
+       */
+      maybeScheduleAdjacentPrime(
+        true
+      );
+    } catch (error) {
+      console.debug(
+        "提前读取当前文件夹视频失败：",
+        error
+      );
+    } finally {
+      earlySiblingDiscoveryRunning =
+        false;
+    }
+  }
+
   /*
    * V7：递归建立 1433223 文件树，但不再阻塞当前视频首帧。
    *
@@ -3228,11 +3498,41 @@ async function initServiceWorker() {
         videoTreeRoot
       );
 
-    nextPlaylist =
-      ensureOpenedVideoInPlaylist(
-        openedFile,
-        nextPlaylist
+    const globalHasActive =
+      nextPlaylist.some(
+        file =>
+          file &&
+          file.id === activeId
       );
+
+    if (
+      !globalHasActive &&
+      provisionalSiblingVideos.length &&
+      provisionalSiblingVideos.some(
+        file =>
+          file.id === activeId
+      )
+    ) {
+      /*
+       * 全局扫描还没到当前分支：
+       * 保留已经提前拿到的同目录列表，
+       * 不让下一条热备被不完整的全局快照冲掉。
+       */
+      nextPlaylist =
+        provisionalSiblingVideos
+          .slice();
+    } else {
+      nextPlaylist =
+        ensureOpenedVideoInPlaylist(
+          openedFile,
+          nextPlaylist
+        );
+
+      if (globalHasActive) {
+        provisionalSiblingVideos =
+          [];
+      }
+    }
 
     nextPlaylist.forEach(
       (file, index) => {
@@ -3337,6 +3637,12 @@ async function initServiceWorker() {
     }
 
     scheduleVideoTreeUiRefresh();
+
+    /*
+     * 如果扫描补出了新的 +1/+2/+3，
+     * 立即更新热备窗口；不再等全树结束。
+     */
+    maybeScheduleAdjacentPrime();
   }
 
   async function startVideoTreeScanInBackground(
@@ -3802,6 +4108,8 @@ async function initServiceWorker() {
     hotStandbyFileId = null;
     hotStandbyReady = false;
     hotStandbyLoading = false;
+    hotStandbyDecodedFrame = false;
+    hotStandbyPrerollTime = 0;
 
     if (hotStandbyRetryTimer) {
       clearTimeout(
@@ -3855,15 +4163,13 @@ async function initServiceWorker() {
 
     /*
      * 不让热备抢一个本来就快断流的当前视频。
-     * 3 秒以上前向缓冲即可启动下一条预热（原来是 4 秒，
-     * 缩短一点能让热备更快开始跑，readyState>=3 的检查还在，
-     * 不会牺牲当前视频的流畅度）。
+     * 4 秒以上前向缓冲即可启动下一条预热。
      */
     if (
       !player.paused &&
       (
         player.readyState < 3 ||
-        getBufferedAhead(player) < 3
+        getBufferedAhead(player) < 2
       )
     ) {
       return false;
@@ -3872,8 +4178,16 @@ async function initServiceWorker() {
     return true;
   }
 
-  function scheduleHotStandbyRetry(
-    index,
+  function findVideoIndexById(fileId) {
+    return videoPlaylist.findIndex(
+      file =>
+        file &&
+        file.id === fileId
+    );
+  }
+
+  function scheduleHotStandbyRetryByFileId(
+    fileId,
     delay = 800
   ) {
     if (
@@ -3890,13 +4204,267 @@ async function initServiceWorker() {
           hotStandbyRetryTimer =
             null;
 
-          prepareHotStandby(
-            index
-          );
+          const index =
+            findVideoIndexById(
+              fileId
+            );
+
+          if (index >= 0) {
+            prepareHotStandby(
+              index
+            );
+          }
         },
         delay
       );
   }
+
+  function waitForVideoEvent(
+    video,
+    eventName,
+    timeout = 4000
+  ) {
+    return new Promise(
+      resolve => {
+        let settled = false;
+
+        const finish =
+          value => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+
+            clearTimeout(timer);
+
+            video.removeEventListener(
+              eventName,
+              onEvent
+            );
+
+            resolve(value);
+          };
+
+        const onEvent =
+          () => finish(true);
+
+        video.addEventListener(
+          eventName,
+          onEvent,
+          { once: true }
+        );
+
+        const timer =
+          setTimeout(
+            () => finish(false),
+            timeout
+          );
+      }
+    );
+  }
+
+  function waitForVideoFrame(
+    video,
+    timeout = 3500
+  ) {
+    return new Promise(
+      resolve => {
+        let settled = false;
+        let frameHandle = null;
+
+        const finish =
+          value => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+
+            if (
+              frameHandle !== null &&
+              typeof video
+                .cancelVideoFrameCallback ===
+                "function"
+            ) {
+              try {
+                video.cancelVideoFrameCallback(
+                  frameHandle
+                );
+              } catch (_) {}
+            }
+
+            resolve(value);
+          };
+
+        const timer =
+          setTimeout(
+            () =>
+              finish(
+                video.readyState >=
+                  HTMLMediaElement
+                    .HAVE_CURRENT_DATA
+              ),
+            timeout
+          );
+
+        if (
+          typeof video
+            .requestVideoFrameCallback ===
+          "function"
+        ) {
+          frameHandle =
+            video.requestVideoFrameCallback(
+              () => finish(true)
+            );
+        } else {
+          video.addEventListener(
+            "playing",
+            () =>
+              setTimeout(
+                () => finish(true),
+                30
+              ),
+            { once: true }
+          );
+        }
+      }
+    );
+  }
+
+  async function prerollHotStandbyFirstFrame(
+    standby,
+    generation,
+    fileId
+  ) {
+    if (
+      !standby ||
+      generation !==
+        hotStandbyGeneration ||
+      hotStandbyFileId !==
+        fileId
+    ) {
+      return false;
+    }
+
+    /*
+     * canplay 并不等于“首帧已经解码并进入合成层”。
+     * V9 真正让隐藏 video 静音播放一帧，再冻结。
+     */
+    if (
+      standby.readyState <
+        HTMLMediaElement
+          .HAVE_CURRENT_DATA
+    ) {
+      await Promise.race([
+        waitForVideoEvent(
+          standby,
+          "loadeddata",
+          8000
+        ),
+        waitForVideoEvent(
+          standby,
+          "canplay",
+          8000
+        )
+      ]);
+    }
+
+    if (
+      generation !==
+        hotStandbyGeneration ||
+      hotStandbyFileId !==
+        fileId
+    ) {
+      return false;
+    }
+
+    standby.muted = true;
+    standby.volume = 0;
+
+    try {
+      if (
+        standby.currentTime > 0.05
+      ) {
+        standby.currentTime = 0;
+        await waitForVideoEvent(
+          standby,
+          "seeked",
+          1200
+        );
+      }
+    } catch (_) {}
+
+    let playStarted = false;
+
+    try {
+      const playPromise =
+        standby.play();
+
+      if (
+        playPromise &&
+        typeof playPromise.then ===
+          "function"
+      ) {
+        await Promise.race([
+          playPromise
+            .then(() => true)
+            .catch(() => false),
+          new Promise(
+            resolve =>
+              setTimeout(
+                () => resolve(false),
+                1800
+              )
+          )
+        ]);
+      }
+
+      playStarted = true;
+    } catch (_) {}
+
+    const decoded =
+      await waitForVideoFrame(
+        standby,
+        3500
+      );
+
+    try {
+      standby.pause();
+    } catch (_) {}
+
+    /*
+     * 再回到片头附近。
+     * 目标是让“点击下一条”的瞬间就有一张真实视频首帧可显示。
+     */
+    try {
+      if (
+        standby.currentTime > 0.12
+      ) {
+        standby.currentTime = 0;
+
+        await waitForVideoEvent(
+          standby,
+          "seeked",
+          1500
+        );
+      }
+    } catch (_) {}
+
+    hotStandbyPrerollTime =
+      Number(
+        standby.currentTime
+      ) || 0;
+
+    return !!(
+      decoded &&
+      standby.readyState >=
+        HTMLMediaElement
+          .HAVE_CURRENT_DATA
+    );
+  }
+
 
   async function prepareHotStandby(
     index =
@@ -3937,9 +4505,9 @@ async function initServiceWorker() {
     if (
       !currentVideoStableEnoughForHotPreload()
     ) {
-      scheduleHotStandbyRetry(
-        index,
-        1000
+      scheduleHotStandbyRetryByFileId(
+        file.id,
+        700
       );
 
       return false;
@@ -4044,103 +4612,15 @@ async function initServiceWorker() {
       standby.load();
 
       /*
-       * canplay 才算真正热备完成。
-       * 此时不是只有 metadata，而是浏览器已经有能力开始播放。
+       * V9：
+       * 不再把 canplay 当成“秒切已准备好”。
+       * 必须实际静音解码出首帧并冻结，才标记 Hot Standby Ready。
        */
       const ready =
-        await new Promise(
-          resolve => {
-            let settled = false;
-
-            const finish =
-              value => {
-                if (settled) {
-                  return;
-                }
-
-                settled = true;
-
-                clearTimeout(
-                  timeout
-                );
-
-                standby.removeEventListener(
-                  "canplay",
-                  onCanPlay
-                );
-
-                standby.removeEventListener(
-                  "loadeddata",
-                  onLoadedData
-                );
-
-                standby.removeEventListener(
-                  "error",
-                  onError
-                );
-
-                resolve(value);
-              };
-
-            const onCanPlay =
-              () =>
-                finish(true);
-
-            const onLoadedData =
-              () => {
-                /*
-                 * 某些浏览器 canplay 发得比较慢。
-                 * HAVE_FUTURE_DATA 也足够用于热切。
-                 */
-                if (
-                  standby.readyState >=
-                    HTMLMediaElement
-                      .HAVE_FUTURE_DATA
-                ) {
-                  finish(true);
-                }
-              };
-
-            const onError =
-              () =>
-                finish(false);
-
-            standby.addEventListener(
-              "canplay",
-              onCanPlay,
-              { once: true }
-            );
-
-            standby.addEventListener(
-              "loadeddata",
-              onLoadedData
-            );
-
-            standby.addEventListener(
-              "error",
-              onError,
-              { once: true }
-            );
-
-            const timeout =
-              setTimeout(
-                () =>
-                  finish(
-                    standby.readyState >=
-                      HTMLMediaElement
-                        .HAVE_CURRENT_DATA
-                  ),
-                12000
-              );
-
-            if (
-              standby.readyState >=
-                HTMLMediaElement
-                  .HAVE_FUTURE_DATA
-            ) {
-              finish(true);
-            }
-          }
+        await prerollHotStandbyFirstFrame(
+          standby,
+          generation,
+          file.id
         );
 
       if (
@@ -4155,8 +4635,13 @@ async function initServiceWorker() {
       hotStandbyReady =
         !!ready;
 
+      hotStandbyDecodedFrame =
+        !!ready;
+
       hotStandbyLoading =
         false;
+
+      updateDiagnostic();
 
       if (hotStandbyReady) {
         console.debug(
@@ -4174,6 +4659,9 @@ async function initServiceWorker() {
           hotStandbyGeneration
       ) {
         hotStandbyReady =
+          false;
+
+        hotStandbyDecodedFrame =
           false;
 
         hotStandbyLoading =
@@ -4204,8 +4692,7 @@ async function initServiceWorker() {
       file &&
       standby &&
       hotStandbyReady &&
-      hotStandbyIndex ===
-        index &&
+      hotStandbyDecodedFrame &&
       hotStandbyFileId ===
         file.id &&
       standby.dataset.hotFileId ===
@@ -4255,6 +4742,22 @@ async function initServiceWorker() {
      */
     const gpuWasActive =
       gpuActive;
+
+    const wrap =
+      document.getElementById(
+        "playerWrap"
+      );
+
+    /*
+     * 先打开视觉桥：
+     * 即使 WebGPU Canvas 还停留在上一条，
+     * 用户也先看到已经解码好的新视频首帧。
+     */
+    if (wrap) {
+      wrap.classList.add(
+        "hot-switch-bridge"
+      );
+    }
 
     if (gpuWasActive) {
       cancelGpuFrames();
@@ -4340,9 +4843,6 @@ async function initServiceWorker() {
         file.size
       );
 
-    // 热切之后也是新文件，同样要清掉拖动预热的“上次位置”记忆。
-    resetSeekScrubPrefetchState();
-
     ensureVideoPathExpanded(
       videoTreeRoot,
       file.id
@@ -4377,6 +4877,9 @@ async function initServiceWorker() {
     hotStandbyReady =
       false;
 
+    hotStandbyDecodedFrame =
+      false;
+
     hotStandbyLoading =
       false;
 
@@ -4397,7 +4900,60 @@ async function initServiceWorker() {
       scheduleGpuFrames();
     }
 
+    const closeHotSwitchBridge =
+      () => {
+        if (gpuWasActive) {
+          renderGpuFrame();
+        }
+
+        requestAnimationFrame(
+          () => {
+            if (wrap) {
+              wrap.classList.remove(
+                "hot-switch-bridge"
+              );
+            }
+          }
+        );
+      };
+
     if (autoplay) {
+      /*
+       * 新 video 已经有冻结首帧：
+       * 先显示首帧，再异步恢复运动。
+       */
+      let bridgeFinished = false;
+
+      const finishOnce =
+        () => {
+          if (bridgeFinished) {
+            return;
+          }
+
+          bridgeFinished = true;
+          closeHotSwitchBridge();
+        };
+
+      if (
+        typeof standby
+          .requestVideoFrameCallback ===
+        "function"
+      ) {
+        standby.requestVideoFrameCallback(
+          () => finishOnce()
+        );
+      } else {
+        standby.addEventListener(
+          "playing",
+          () =>
+            setTimeout(
+              finishOnce,
+              20
+            ),
+          { once: true }
+        );
+      }
+
       try {
         const promise =
           standby.play();
@@ -4410,32 +4966,249 @@ async function initServiceWorker() {
             )
         );
       } catch (_) {}
+
+      /*
+       * 极端情况下浏览器不回调视频帧，
+       * 也不能让 GPU Canvas 永久隐藏。
+       */
+      setTimeout(
+        finishOnce,
+        450
+      );
+    } else {
+      closeHotSwitchBridge();
     }
 
     setStatus(
       sharpenMode === 0
-        ? "Original · 流畅模式（热切）"
-        : "Original · 已热切下一条"
+        ? "Original · 流畅模式（真实热切）"
+        : "Original · 已显示预解码首帧 · 热切"
     );
 
     showWatchUi();
 
     /*
-     * 新视频顶上来后，再准备它的下一条。
-     * prepareHotStandby() 内部会用 currentVideoStableEnoughForHotPreload()
-     * 重新判断新播放器是否已经稳定，不稳定会自动 scheduleHotStandbyRetry()，
-     * 所以这里不需要刻意拖很久——缩短这个延迟只是让“下一条的下一条”
-     * 更早开始尝试预热，真正是否开始抓数据仍然由内部稳定性判断把关。
+     * 新视频顶上来后，重新建立：
+     * +1/+2/+3 的 2.5 秒片头窗口，
+     * 并让新的 +1 继续完整 Hot Standby。
      */
     setTimeout(
-      () =>
-        prepareHotStandby(
-          currentVideoIndex + 1
-        ),
-      150
+      scheduleAdjacentVideoPrime,
+      350
     );
 
     return true;
+  }
+
+  function getVideoDurationMillis(file) {
+    const duration =
+      Number(
+        file &&
+        file.videoMediaMetadata &&
+        file.videoMediaMetadata.durationMillis
+      );
+
+    return (
+      Number.isFinite(duration) &&
+      duration > 0
+    )
+      ? duration
+      : 0;
+  }
+
+  function currentVideoStableEnoughForPrefixPrime() {
+    const player =
+      document.getElementById(
+        "player"
+      );
+
+    if (!player) {
+      return false;
+    }
+
+    if (
+      player.seeking ||
+      seekRescueActivation ||
+      seekRescueSession
+    ) {
+      return false;
+    }
+
+    /*
+     * 三条片头预读比单个 Hot Standby 更保守：
+     * 当前视频播放时至少保留约 6 秒前向缓冲。
+     */
+    if (
+      !player.paused &&
+      (
+        player.readyState < 3 ||
+        getBufferedAhead(player) < 6
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  async function primeVideoPrefix(
+    worker,
+    file,
+    seconds =
+      VIDEO_PREFIX_PRELOAD_SECONDS
+  ) {
+    if (
+      !worker ||
+      !file?.id ||
+      !currentAccessToken
+    ) {
+      return false;
+    }
+
+    return postWorkerMessage(
+      worker,
+      {
+        type:
+          "PRIME_MEDIA",
+        token:
+          currentAccessToken,
+        fileId:
+          file.id,
+        fileSize:
+          Number(file.size),
+        resourceKey:
+          file.resourceKey ||
+          null,
+        durationMillis:
+          getVideoDurationMillis(
+            file
+          ),
+        primeSeconds:
+          seconds
+      },
+      15000
+    );
+  }
+
+  async function primeNextVideoPrefixes(
+    worker,
+    generation
+  ) {
+    if (
+      !worker ||
+      generation !==
+        videoPrefixPrimeGeneration
+    ) {
+      return;
+    }
+
+    const targets = [];
+
+    for (
+      let offset = 1;
+      offset <=
+        VIDEO_PREFIX_PRELOAD_COUNT;
+      offset++
+    ) {
+      const index =
+        currentVideoIndex +
+        offset;
+
+      const file =
+        videoPlaylist[index];
+
+      if (file?.id) {
+        targets.push({
+          index,
+          file,
+          offset
+        });
+      }
+    }
+
+    if (!targets.length) {
+      videoPrefixPrimeState =
+        "没有后续视频";
+
+      return;
+    }
+
+    videoPrefixPrimeState =
+      "准备预读";
+
+    for (
+      const target of targets
+    ) {
+      if (
+        generation !==
+          videoPrefixPrimeGeneration
+      ) {
+        return;
+      }
+
+      /*
+       * 当前视频如果突然进入 Seek / Buffering，
+       * 暂停后续片头请求；1 秒后让现有调度重新尝试。
+       */
+      if (
+        !currentVideoStableEnoughForPrefixPrime()
+      ) {
+        videoPrefixPrimeState =
+          "当前视频忙 · 暂停预读";
+
+        setTimeout(
+          scheduleAdjacentVideoPrime,
+          1000
+        );
+
+        return;
+      }
+
+      videoPrefixPrimeState =
+        `预读 +${target.offset} · ${VIDEO_PREFIX_PRELOAD_SECONDS.toFixed(1)}s`;
+
+      await primeVideoPrefix(
+        worker,
+        target.file,
+        VIDEO_PREFIX_PRELOAD_SECONDS
+      );
+
+      if (
+        generation !==
+          videoPrefixPrimeGeneration
+      ) {
+        return;
+      }
+
+      /*
+       * +1 的 2.5 秒片头到位后，
+       * 再让隐藏播放器继续完整 Hot Standby。
+       * 不等 +2/+3，优先保证“下一条”秒切。
+       */
+      if (
+        target.offset === 1
+      ) {
+        prepareHotStandby(
+          target.index
+        );
+      }
+
+      /*
+       * 每个文件之间稍微让出主线程/网络调度机会。
+       */
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            90
+          )
+      );
+    }
+
+    videoPrefixPrimeState =
+      `已预读后续 ${targets.length} 条 × ${VIDEO_PREFIX_PRELOAD_SECONDS.toFixed(1)}s`;
+
+    updateDiagnostic();
   }
 
   function scheduleAdjacentVideoPrime() {
@@ -4457,47 +5230,15 @@ async function initServiceWorker() {
 
   async function primeAdjacentVideos() {
     /*
-     * 后台目录仍在补全时，播放列表 index 还会变化。
-     * 等扫描结束再启动真实下一条 Hot Standby。
+     * V9 不再等待全树扫描结束。
+     * 热备按 fileId 锚定；如果扫描改变了 +1/+2/+3，
+     * generation 会让旧任务失效并重新建立窗口。
      */
-    if (videoTreeScanInProgress) {
-      return;
-    }
 
     if (
       !serviceWorkerReady ||
       !currentAccessToken ||
       !videoPlaylist.length
-    ) {
-      return;
-    }
-
-    /*
-     * 真正“秒切”的关键：
-     * 用隐藏第二个 <video> 真实预加载下一条，
-     * 而不是只预取几个 MB。
-     */
-    const nextIndex =
-      currentVideoIndex + 1;
-
-    if (
-      nextIndex >= 0 &&
-      nextIndex <
-        videoPlaylist.length
-    ) {
-      prepareHotStandby(
-        nextIndex
-      );
-    }
-
-    /*
-     * 上一条只做轻量 SW prime，
-     * 不再同时养第二个真实 video，
-     * 避免双向预加载抢当前视频带宽。
-     */
-    if (
-      smoothDeviceMode ||
-      currentVideoIndex <= 0
     ) {
       return;
     }
@@ -4523,6 +5264,36 @@ async function initServiceWorker() {
       return;
     }
 
+    /*
+     * 每次当前视频改变，都让旧的多视频预读任务失效。
+     */
+    const generation =
+      ++videoPrefixPrimeGeneration;
+
+    /*
+     * V8：
+     * 后续 +1/+2/+3 顺序缓存约 2.5 秒片头。
+     * +1 完成片头缓存后继续完整 Hot Standby。
+     *
+     * 故意不 await：
+     * 不阻塞当前播放器的 UI / loadeddata 回调。
+     */
+    primeNextVideoPrefixes(
+      worker,
+      generation
+    );
+
+    /*
+     * 上一条继续保留轻量 Prime，
+     * 方便用户临时返回上一条。
+     */
+    if (
+      smoothDeviceMode ||
+      currentVideoIndex <= 0
+    ) {
+      return;
+    }
+
     const previous =
       videoPlaylist[
         currentVideoIndex - 1
@@ -4543,22 +5314,20 @@ async function initServiceWorker() {
         Number(previous.size),
       resourceKey:
         previous.resourceKey ||
-        null
+        null,
+      durationMillis:
+        getVideoDurationMillis(
+          previous
+        ),
+      primeSeconds:
+        VIDEO_PREFIX_PRELOAD_SECONDS
     });
   }
 
   /*
    * ================================================================
-   * 更快切换 / 更快拖进度条：悬停预热 + 拖动预热
+   * V10 Hybrid · Claude 增量优化：Hover Prefetch + Seek Scrub Prime
    * ================================================================
-   *
-   * 两个都是“命中就更快，没命中也不影响原有行为”的纯增量优化：
-   *   1) prefetchPlaylistItemOnHover：鼠标划到列表某一条（或手指按下）
-   *      就顺手用已有的 PRIME_MEDIA 通道预热它开头 2MB，覆盖“点开不相邻
-   *      视频”这种热备机制之前没有覆盖到的场景。
-   *   2) scheduleSeekScrubPrefetch：拖动进度条、还没松手时按估算字节
-   *      位置节流发 PRIME_SEEK，让 SW 提前抓一小块；松手真正 seek
-   *      时命中就不用再等一次到 Google 的完整网络往返。
    */
 
   async function getActiveServiceWorker() {
@@ -4605,6 +5374,16 @@ async function initServiceWorker() {
       return;
     }
 
+    /*
+     * 当前视频如果本身在挣扎，就不为鼠标悬停抢网络。
+     * 这比 Claude 原版更保守。
+     */
+    if (
+      !currentVideoStableEnoughForPrefixPrime()
+    ) {
+      return;
+    }
+
     hoverPrefetchedFileIds.add(
       file.id
     );
@@ -4640,7 +5419,13 @@ async function initServiceWorker() {
               Number(file.size),
             resourceKey:
               file.resourceKey ||
-              null
+              null,
+            durationMillis:
+              getVideoDurationMillis(
+                file
+              ),
+            primeSeconds:
+              VIDEO_PREFIX_PRELOAD_SECONDS
           });
         } catch (_) {}
       }
@@ -4651,6 +5436,8 @@ async function initServiceWorker() {
     seekPrefetchLastOffset = -1;
     seekPrefetchPendingOffset =
       null;
+    seekScrubPrimeState =
+      "待命";
 
     if (
       seekPrefetchTrailingTimer
@@ -4689,6 +5476,13 @@ async function initServiceWorker() {
       fileId !== currentFileId
     ) {
       return;
+    }
+
+    seekScrubPrimeState =
+      "预热拖动目标";
+
+    if (diagnosticOpen) {
+      updateDiagnostic();
     }
 
     try {
@@ -4736,12 +5530,6 @@ async function initServiceWorker() {
     );
   }
 
-  /*
-   * ratio：0~1，沿视频总时长的进度比例（拖动条的 value / max）。
-   * 按比例线性估算字节位置——不是精确的关键帧位置，但作为“预热去
-   * 哪一段”的目标已经足够：命中就是纯收益，没命中就退回原有的正常
-   * 网络请求，不会比现在更慢。
-   */
   function scheduleSeekScrubPrefetch(
     ratio
   ) {
@@ -4757,13 +5545,19 @@ async function initServiceWorker() {
       return;
     }
 
+    const clampedRatio =
+      Math.max(
+        0,
+        Math.min(1, ratio)
+      );
+
     const estimatedOffset =
       Math.max(
         0,
         Math.min(
           currentFileSize - 1,
           Math.floor(
-            ratio *
+            clampedRatio *
               currentFileSize
           )
         )
@@ -5574,8 +6368,9 @@ async function initServiceWorker() {
     );
 
     /*
-     * 鼠标划过（或手指刚触碰到）非当前项时，顺手预热它开头 2MB。
-     * 命中的话，等真正点击/松手切过去时能明显更快出画面。
+     * 列表任意视频的主动预热：
+     * - 桌面：鼠标进入条目；
+     * - 触摸/手写笔：按下条目时尽早发请求。
      */
     button.addEventListener(
       "pointerenter",
@@ -5583,6 +6378,23 @@ async function initServiceWorker() {
         if (
           index !==
             currentVideoIndex
+        ) {
+          prefetchPlaylistItemOnHover(
+            file
+          );
+        }
+      },
+      { passive: true }
+    );
+
+    button.addEventListener(
+      "pointerdown",
+      event => {
+        if (
+          index !==
+            currentVideoIndex &&
+          event.pointerType !==
+            "mouse"
         ) {
           prefetchPlaylistItemOnHover(
             file
@@ -5725,6 +6537,13 @@ async function initServiceWorker() {
     lastHotSwitchUsed =
       false;
 
+    resetSeekScrubPrefetchState();
+
+    /*
+     * 切换目标后，旧的“后续 3 条片头预读”立即失效。
+     */
+    videoPrefixPrimeGeneration += 1;
+
     const generation =
       ++switchGeneration;
 
@@ -5749,9 +6568,6 @@ async function initServiceWorker() {
     currentFileId = file.id;
     currentResourceKey = file.resourceKey || null;
     currentFileSize = Number(file.size);
-
-    // 新文件的字节位置和上一个文件无关，拖动预热的“上次位置”记忆要清空。
-    resetSeekScrubPrefetchState();
 
     /*
      * 上一条 / 下一条 / 自动连播跨文件夹时，
@@ -6010,10 +6826,8 @@ async function initServiceWorker() {
           handlePlayerSeekingForRescue();
 
           /*
-           * 自定义进度条拖动时已经在 input 事件里预热过了；
-           * 这里是给原生 <video controls>（GPU 未启用时）拖动
-           * 补一层预热信号——原生控件拖动同样会连续触发 seeking，
-           * 顺手预热一下没有坏处。
+           * 原生 <video controls> 拖动没有 gpuSeek 的 input 事件，
+           * 用 seeking 事件补一层启发式位置预热。
            */
           if (
             Number.isFinite(
@@ -6142,24 +6956,12 @@ async function initServiceWorker() {
    * 正常文件继续原生 <video>；仅 Seek 卡住时加载本模块。
    */
 
-  /*
-   * 时间常数调整说明（让“卡住判定”和“首次可播放”都更快一点）：
-   * - SEEK_RESCUE_TIMEOUT_MS：1200 → 900。首次遇到的文件，原生 seek
-   *   如果确实卡住，能更快判定并切换到 Rescue，不用多等 300ms。
-   * - SEEK_RESCUE_WINDOW_BACK_SEC：6 → 4。往目标时间点前多留 4 秒
-   *   找关键帧对齐点，对绝大多数消费级视频（GOP 通常 1~2 秒）依然
-   *   足够安全，同时减少了首次要重新封装的时长。
-   * - seekTo() 里 initialUntil 的 "+4" 余量改成 "+2"（见下方 seekTo）：
-   *   配合上面的调整，首次转码总量从 10 秒降到 6 秒左右，
-   *   Rescue 激活后出画面明显更快；缓冲余量变小的部分由已有的
-   *   1 秒一次的 refillIfNeeded() 自动补上，不影响持续播放的稳定性。
-   */
-  const SEEK_RESCUE_TIMEOUT_MS = 900;
+  const SEEK_RESCUE_TIMEOUT_MS = 1200;
   const SEEK_RESCUE_DEBOUNCE_MS = 150;
-  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 6;
+  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 10;
   const SEEK_RESCUE_REFILL_OUTPUT_SEC = 16;
   const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 5;
-  const SEEK_RESCUE_WINDOW_BACK_SEC = 4;
+  const SEEK_RESCUE_WINDOW_BACK_SEC = 6;
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
 
@@ -7164,7 +7966,7 @@ async function initServiceWorker() {
       const initialUntil =
         Math.max(
           SEEK_RESCUE_INITIAL_OUTPUT_SEC,
-          relativeTarget + 2
+          relativeTarget + 4
         );
 
       await this.executeUntil(
@@ -8037,8 +8839,17 @@ function authorizeDrive() {
       );
 
       /*
+       * 先单独读取当前视频的直接父文件夹：
+       * 同目录“下一条”通常可以在全树扫描完成前数秒甚至更早开始预解码。
+       */
+      discoverCurrentFolderVideosEarly(
+        openedFile,
+        accessToken
+      );
+
+      /*
        * 故意不 await：
-       * 目录扫描从这里开始与视频播放并行。
+       * 1433223 全树扫描继续与视频播放并行。
        */
       startVideoTreeScanInBackground(
         openedFile,
