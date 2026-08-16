@@ -271,6 +271,34 @@ function touchPrimeCache(fileId, entry) {
   }
 }
 
+function canUsePrimeFetchResponse(
+  response,
+  requestedStart,
+  requestedEnd,
+  fileSize
+) {
+  if (response.status === 206) {
+    return true;
+  }
+
+  /*
+   * PRIME 必须保持为有界的小范围读取。
+   * 若上游忽略 Range 返回 200，只有请求窗口本来就是整个小文件时
+   * 才允许 arrayBuffer；否则立即丢弃响应，避免把大文件读入 SW 内存。
+   */
+  return !!(
+    response.status === 200 &&
+    requestedStart === 0 &&
+    requestedEnd === fileSize - 1
+  );
+}
+
+async function discardPrimeResponse(response) {
+  try {
+    await response.body?.cancel();
+  } catch (_) {}
+}
+
 async function primeMediaFile({
   fileId,
   token,
@@ -377,9 +405,16 @@ async function primeMediaFile({
       );
 
     if (
-      response.status !== 206 &&
-      !response.ok
+      !canUsePrimeFetchResponse(
+        response,
+        0,
+        end,
+        fileSize
+      )
     ) {
+      await discardPrimeResponse(
+        response
+      );
       return false;
     }
 
@@ -662,9 +697,16 @@ async function primeSeekPosition({
       );
 
     if (
-      response.status !== 206 &&
-      !response.ok
+      !canUsePrimeFetchResponse(
+        response,
+        alignedStart,
+        end,
+        fileSize
+      )
     ) {
+      await discardPrimeResponse(
+        response
+      );
       return false;
     }
 

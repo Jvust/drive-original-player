@@ -3279,6 +3279,25 @@ async function initServiceWorker() {
     let scannedFolders = 0;
     const MAX_FOLDERS = 5000;
 
+    const isMediaSensitiveForTreeScan =
+      player =>
+        !!(
+          player &&
+          (
+            player.seeking ||
+            seekRescueActivation ||
+            seekRescueSession ||
+            (
+              player.currentSrc &&
+              player.readyState < 3
+            ) ||
+            (
+              !player.paused &&
+              getBufferedAhead(player) < 4
+            )
+          )
+        );
+
     while (queue.length) {
       const player =
         document.getElementById(
@@ -3292,8 +3311,18 @@ async function initServiceWorker() {
           !player.ended
         );
 
+      const mediaSensitive =
+        isMediaSensitiveForTreeScan(
+          player
+        );
+
       const concurrency =
-        playing ? 2 : 4;
+        (
+          playing ||
+          mediaSensitive
+        )
+          ? 2
+          : 4;
 
       const batch =
         queue.splice(
@@ -3367,18 +3396,8 @@ async function initServiceWorker() {
         );
 
       const mediaBusy =
-        !!(
-          activePlayer &&
-          !activePlayer.paused &&
-          (
-            activePlayer.seeking ||
-            seekRescueActivation ||
-            seekRescueSession ||
-            activePlayer.readyState < 3 ||
-            getBufferedAhead(
-              activePlayer
-            ) < 4
-          )
+        isMediaSensitiveForTreeScan(
+          activePlayer
         );
 
       await new Promise(
