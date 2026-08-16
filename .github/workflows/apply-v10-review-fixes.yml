@@ -1,0 +1,236 @@
+name: Apply verified V10 review fixes
+
+on:
+  push:
+    paths:
+      - ".github/workflows/apply-v10-review-fixes.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply verified fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          index_path = Path("index.html")
+          text = index_path.read_text(encoding="utf-8")
+
+          old = '''    while (queue.length) {
+      const player =
+        document.getElementById(
+          "player"
+        );
+
+      const playing =
+        !!(
+          player &&
+          !player.paused &&
+          !player.ended
+        );
+
+      const concurrency =
+        playing ? 2 : 4;
+'''
+          new = '''    const isMediaSensitiveForTreeScan =
+      player =>
+        !!(
+          player &&
+          (
+            player.seeking ||
+            seekRescueActivation ||
+            seekRescueSession ||
+            (
+              player.currentSrc &&
+              player.readyState < 3
+            ) ||
+            (
+              !player.paused &&
+              getBufferedAhead(player) < 4
+            )
+          )
+        );
+
+    while (queue.length) {
+      const player =
+        document.getElementById(
+          "player"
+        );
+
+      const playing =
+        !!(
+          player &&
+          !player.paused &&
+          !player.ended
+        );
+
+      const mediaSensitive =
+        isMediaSensitiveForTreeScan(
+          player
+        );
+
+      const concurrency =
+        (
+          playing ||
+          mediaSensitive
+        )
+          ? 2
+          : 4;
+'''
+          if old not in text:
+              raise SystemExit("index patch 1 anchor not found")
+          text = text.replace(old, new, 1)
+
+          old = '''      const mediaBusy =
+        !!(
+          activePlayer &&
+          !activePlayer.paused &&
+          (
+            activePlayer.seeking ||
+            seekRescueActivation ||
+            seekRescueSession ||
+            activePlayer.readyState < 3 ||
+            getBufferedAhead(
+              activePlayer
+            ) < 4
+          )
+        );
+'''
+          new = '''      const mediaBusy =
+        isMediaSensitiveForTreeScan(
+          activePlayer
+        );
+'''
+          if old not in text:
+              raise SystemExit("index patch 2 anchor not found")
+          text = text.replace(old, new, 1)
+          index_path.write_text(text, encoding="utf-8")
+
+          sw_path = Path("sw.js")
+          sw = sw_path.read_text(encoding="utf-8")
+
+          anchor = '''async function primeMediaFile({
+'''
+          helper = '''function canUsePrimeFetchResponse(
+  response,
+  requestedStart,
+  requestedEnd,
+  fileSize
+) {
+  if (response.status === 206) {
+    return true;
+  }
+
+  /*
+   * 如果 Range 被上游忽略而返回 200，绝不能把大型完整文件
+   * arrayBuffer() 进 SW 内存。只有“请求窗口本来就是整个小文件”
+   * 时，200 才与 PRIME 的意图等价。
+   */
+  return !!(
+    response.status === 200 &&
+    requestedStart === 0 &&
+    requestedEnd === fileSize - 1
+  );
+}
+
+async function discardPrimeResponse(response) {
+  try {
+    await response.body?.cancel();
+  } catch (_) {}
+}
+
+'''
+          if helper not in sw:
+              if anchor not in sw:
+                  raise SystemExit("sw helper anchor not found")
+              sw = sw.replace(anchor, helper + anchor, 1)
+
+          old = '''    if (
+      response.status !== 206 &&
+      !response.ok
+    ) {
+      return false;
+    }
+
+    const buffer =
+      await response.arrayBuffer();
+'''
+          new_media = '''    if (
+      !canUsePrimeFetchResponse(
+        response,
+        0,
+        end,
+        fileSize
+      )
+    ) {
+      await discardPrimeResponse(
+        response
+      );
+      return false;
+    }
+
+    const buffer =
+      await response.arrayBuffer();
+'''
+          if old not in sw:
+              raise SystemExit("sw media-prime response anchor not found")
+          sw = sw.replace(old, new_media, 1)
+
+          new_seek = '''    if (
+      !canUsePrimeFetchResponse(
+        response,
+        alignedStart,
+        end,
+        fileSize
+      )
+    ) {
+      await discardPrimeResponse(
+        response
+      );
+      return false;
+    }
+
+    const buffer =
+      await response.arrayBuffer();
+'''
+          if old not in sw:
+              raise SystemExit("sw seek-prime response anchor not found")
+          sw = sw.replace(old, new_seek, 1)
+
+          sw_path.write_text(sw, encoding="utf-8")
+          PY
+
+      - name: Syntax and diff checks
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
+          if not scripts:
+              raise SystemExit("No inline script found")
+          Path("/tmp/player-inline.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/player-inline.js
+          node --check sw.js
+          git diff --check
+          grep -q "isMediaSensitiveForTreeScan" index.html
+          grep -q "canUsePrimeFetchResponse" sw.js
+
+      - name: Commit verified fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html sw.js
+          git commit -m "Fix media-sensitive tree scan and prime Range guard"
+          git push origin HEAD:main
