@@ -1023,6 +1023,26 @@
   let hotStandbyRetryTimer = null;
   let lastHotSwitchUsed = false;
 
+  /*
+   * 播放列表悬停/触摸预热：
+   * 鼠标划到某一条（或手指按下瞬间）就顺手让 SW 预热它开头 2MB，
+   * 不等真正点击。命中的话，点击那一刻就不用再等一次完整网络往返。
+   */
+  const hoverPrefetchedFileIds = new Set();
+  const HOVER_PREFETCH_MAX_REMEMBERED = 40;
+
+  /*
+   * 拖动进度条预热（Seek Scrub Prime，客户端一侧）：
+   * 拖动过程中按估算字节位置节流发送 PRIME_SEEK，让 SW 提前抓一小块。
+   * 松手真正 seek 时如果命中，就能省掉一次到 Google 的完整网络往返。
+   */
+  let seekPrefetchLastFireTime = 0;
+  let seekPrefetchLastOffset = -1;
+  let seekPrefetchPendingOffset = null;
+  let seekPrefetchTrailingTimer = null;
+  const SEEK_PREFETCH_THROTTLE_MS = 220;
+  const SEEK_PREFETCH_MIN_DELTA_BYTES = 512 * 1024;
+
   function detectSmoothDevice() {
     const ua = navigator.userAgent || "";
     const uaMobile = !!(
@@ -2147,9 +2167,11 @@ function initGpuMediaControls() {
         Number.isFinite(player.duration) &&
         player.duration > 0
       ) {
+        const ratio =
+          Number(seek.value) / 1000;
+
         const next =
-          (Number(seek.value) / 1000) *
-          player.duration;
+          ratio * player.duration;
 
         const time = document.getElementById("gpuTime");
         if (time) {
@@ -2158,6 +2180,14 @@ function initGpuMediaControls() {
             " / " +
             formatSeconds(player.duration);
         }
+
+        /*
+         * 还没松手就按当前拖动位置预热 SW 缓存（节流发送）。
+         * 松手真正 seek 时命中的话，能明显更快出画面。
+         */
+        scheduleSeekScrubPrefetch(
+          ratio
+        );
       }
     });
 
@@ -3825,13 +3855,15 @@ async function initServiceWorker() {
 
     /*
      * 不让热备抢一个本来就快断流的当前视频。
-     * 4 秒以上前向缓冲即可启动下一条预热。
+     * 3 秒以上前向缓冲即可启动下一条预热（原来是 4 秒，
+     * 缩短一点能让热备更快开始跑，readyState>=3 的检查还在，
+     * 不会牺牲当前视频的流畅度）。
      */
     if (
       !player.paused &&
       (
         player.readyState < 3 ||
-        getBufferedAhead(player) < 4
+        getBufferedAhead(player) < 3
       )
     ) {
       return false;
@@ -3842,7 +3874,7 @@ async function initServiceWorker() {
 
   function scheduleHotStandbyRetry(
     index,
-    delay = 1200
+    delay = 800
   ) {
     if (
       hotStandbyRetryTimer
@@ -4308,6 +4340,9 @@ async function initServiceWorker() {
         file.size
       );
 
+    // 热切之后也是新文件，同样要清掉拖动预热的“上次位置”记忆。
+    resetSeekScrubPrefetchState();
+
     ensureVideoPathExpanded(
       videoTreeRoot,
       file.id
@@ -4387,13 +4422,17 @@ async function initServiceWorker() {
 
     /*
      * 新视频顶上来后，再准备它的下一条。
+     * prepareHotStandby() 内部会用 currentVideoStableEnoughForHotPreload()
+     * 重新判断新播放器是否已经稳定，不稳定会自动 scheduleHotStandbyRetry()，
+     * 所以这里不需要刻意拖很久——缩短这个延迟只是让“下一条的下一条”
+     * 更早开始尝试预热，真正是否开始抓数据仍然由内部稳定性判断把关。
      */
     setTimeout(
       () =>
         prepareHotStandby(
           currentVideoIndex + 1
         ),
-      650
+      150
     );
 
     return true;
@@ -4506,6 +4545,267 @@ async function initServiceWorker() {
         previous.resourceKey ||
         null
     });
+  }
+
+  /*
+   * ================================================================
+   * 更快切换 / 更快拖进度条：悬停预热 + 拖动预热
+   * ================================================================
+   *
+   * 两个都是“命中就更快，没命中也不影响原有行为”的纯增量优化：
+   *   1) prefetchPlaylistItemOnHover：鼠标划到列表某一条（或手指按下）
+   *      就顺手用已有的 PRIME_MEDIA 通道预热它开头 2MB，覆盖“点开不相邻
+   *      视频”这种热备机制之前没有覆盖到的场景。
+   *   2) scheduleSeekScrubPrefetch：拖动进度条、还没松手时按估算字节
+   *      位置节流发 PRIME_SEEK，让 SW 提前抓一小块；松手真正 seek
+   *      时命中就不用再等一次到 Google 的完整网络往返。
+   */
+
+  async function getActiveServiceWorker() {
+    if (
+      !serviceWorkerReady ||
+      !("serviceWorker" in navigator)
+    ) {
+      return null;
+    }
+
+    try {
+      const registration =
+        await navigator
+          .serviceWorker
+          .ready;
+
+      return (
+        navigator.serviceWorker
+          .controller ||
+        registration.active ||
+        null
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function prefetchPlaylistItemOnHover(file) {
+    if (
+      !file?.id ||
+      !currentAccessToken ||
+      !serviceWorkerReady ||
+      smoothDeviceMode ||
+      file.id === currentFileId ||
+      hoverPrefetchedFileIds.has(
+        file.id
+      ) ||
+      (
+        file.capabilities &&
+        file.capabilities
+          .canDownload === false
+      )
+    ) {
+      return;
+    }
+
+    hoverPrefetchedFileIds.add(
+      file.id
+    );
+
+    if (
+      hoverPrefetchedFileIds.size >
+        HOVER_PREFETCH_MAX_REMEMBERED
+    ) {
+      const oldest =
+        hoverPrefetchedFileIds
+          .values()
+          .next()
+          .value;
+
+      hoverPrefetchedFileIds.delete(
+        oldest
+      );
+    }
+
+    getActiveServiceWorker().then(
+      worker => {
+        if (!worker) return;
+
+        try {
+          worker.postMessage({
+            type:
+              "PRIME_MEDIA",
+            token:
+              currentAccessToken,
+            fileId:
+              file.id,
+            fileSize:
+              Number(file.size),
+            resourceKey:
+              file.resourceKey ||
+              null
+          });
+        } catch (_) {}
+      }
+    );
+  }
+
+  function resetSeekScrubPrefetchState() {
+    seekPrefetchLastOffset = -1;
+    seekPrefetchPendingOffset =
+      null;
+
+    if (
+      seekPrefetchTrailingTimer
+    ) {
+      clearTimeout(
+        seekPrefetchTrailingTimer
+      );
+
+      seekPrefetchTrailingTimer =
+        null;
+    }
+  }
+
+  async function fireSeekScrubPrefetch(
+    estimatedOffset
+  ) {
+    const fileId = currentFileId;
+    const token = currentAccessToken;
+    const fileSize = currentFileSize;
+    const resourceKey = currentResourceKey;
+
+    if (
+      !fileId ||
+      !token ||
+      !Number.isFinite(fileSize) ||
+      fileSize <= 0
+    ) {
+      return;
+    }
+
+    const worker =
+      await getActiveServiceWorker();
+
+    if (
+      !worker ||
+      fileId !== currentFileId
+    ) {
+      return;
+    }
+
+    try {
+      worker.postMessage({
+        type: "PRIME_SEEK",
+        token,
+        fileId,
+        fileSize,
+        resourceKey,
+        offset: estimatedOffset
+      });
+    } catch (_) {}
+  }
+
+  function flushSeekScrubPrefetch() {
+    if (
+      seekPrefetchTrailingTimer
+    ) {
+      clearTimeout(
+        seekPrefetchTrailingTimer
+      );
+
+      seekPrefetchTrailingTimer =
+        null;
+    }
+
+    const estimatedOffset =
+      seekPrefetchPendingOffset;
+
+    seekPrefetchPendingOffset =
+      null;
+
+    if (estimatedOffset === null) {
+      return;
+    }
+
+    seekPrefetchLastFireTime =
+      performance.now();
+
+    seekPrefetchLastOffset =
+      estimatedOffset;
+
+    fireSeekScrubPrefetch(
+      estimatedOffset
+    );
+  }
+
+  /*
+   * ratio：0~1，沿视频总时长的进度比例（拖动条的 value / max）。
+   * 按比例线性估算字节位置——不是精确的关键帧位置，但作为“预热去
+   * 哪一段”的目标已经足够：命中就是纯收益，没命中就退回原有的正常
+   * 网络请求，不会比现在更慢。
+   */
+  function scheduleSeekScrubPrefetch(
+    ratio
+  ) {
+    if (
+      !currentFileId ||
+      !currentAccessToken ||
+      !Number.isFinite(
+        currentFileSize
+      ) ||
+      currentFileSize <= 0 ||
+      !Number.isFinite(ratio)
+    ) {
+      return;
+    }
+
+    const estimatedOffset =
+      Math.max(
+        0,
+        Math.min(
+          currentFileSize - 1,
+          Math.floor(
+            ratio *
+              currentFileSize
+          )
+        )
+      );
+
+    const movedEnough =
+      seekPrefetchLastOffset < 0 ||
+      Math.abs(
+        estimatedOffset -
+          seekPrefetchLastOffset
+      ) >=
+        SEEK_PREFETCH_MIN_DELTA_BYTES;
+
+    if (!movedEnough) {
+      return;
+    }
+
+    seekPrefetchPendingOffset =
+      estimatedOffset;
+
+    const elapsed =
+      performance.now() -
+      seekPrefetchLastFireTime;
+
+    if (
+      elapsed >=
+        SEEK_PREFETCH_THROTTLE_MS
+    ) {
+      flushSeekScrubPrefetch();
+      return;
+    }
+
+    if (
+      !seekPrefetchTrailingTimer
+    ) {
+      seekPrefetchTrailingTimer =
+        setTimeout(
+          flushSeekScrubPrefetch,
+          SEEK_PREFETCH_THROTTLE_MS -
+            elapsed
+        );
+    }
   }
 
   function shuffleBackgroundFiles(files) {
@@ -5273,6 +5573,25 @@ async function initServiceWorker() {
       }
     );
 
+    /*
+     * 鼠标划过（或手指刚触碰到）非当前项时，顺手预热它开头 2MB。
+     * 命中的话，等真正点击/松手切过去时能明显更快出画面。
+     */
+    button.addEventListener(
+      "pointerenter",
+      () => {
+        if (
+          index !==
+            currentVideoIndex
+        ) {
+          prefetchPlaylistItemOnHover(
+            file
+          );
+        }
+      },
+      { passive: true }
+    );
+
     return button;
   }
 
@@ -5430,6 +5749,9 @@ async function initServiceWorker() {
     currentFileId = file.id;
     currentResourceKey = file.resourceKey || null;
     currentFileSize = Number(file.size);
+
+    // 新文件的字节位置和上一个文件无关，拖动预热的“上次位置”记忆要清空。
+    resetSeekScrubPrefetchState();
 
     /*
      * 上一条 / 下一条 / 自动连播跨文件夹时，
@@ -5686,6 +6008,24 @@ async function initServiceWorker() {
       () => {
         if (isActivePlayer()) {
           handlePlayerSeekingForRescue();
+
+          /*
+           * 自定义进度条拖动时已经在 input 事件里预热过了；
+           * 这里是给原生 <video controls>（GPU 未启用时）拖动
+           * 补一层预热信号——原生控件拖动同样会连续触发 seeking，
+           * 顺手预热一下没有坏处。
+           */
+          if (
+            Number.isFinite(
+              player.duration
+            ) &&
+            player.duration > 0
+          ) {
+            scheduleSeekScrubPrefetch(
+              player.currentTime /
+                player.duration
+            );
+          }
         }
       }
     );
@@ -5802,12 +6142,24 @@ async function initServiceWorker() {
    * 正常文件继续原生 <video>；仅 Seek 卡住时加载本模块。
    */
 
-  const SEEK_RESCUE_TIMEOUT_MS = 1200;
+  /*
+   * 时间常数调整说明（让“卡住判定”和“首次可播放”都更快一点）：
+   * - SEEK_RESCUE_TIMEOUT_MS：1200 → 900。首次遇到的文件，原生 seek
+   *   如果确实卡住，能更快判定并切换到 Rescue，不用多等 300ms。
+   * - SEEK_RESCUE_WINDOW_BACK_SEC：6 → 4。往目标时间点前多留 4 秒
+   *   找关键帧对齐点，对绝大多数消费级视频（GOP 通常 1~2 秒）依然
+   *   足够安全，同时减少了首次要重新封装的时长。
+   * - seekTo() 里 initialUntil 的 "+4" 余量改成 "+2"（见下方 seekTo）：
+   *   配合上面的调整，首次转码总量从 10 秒降到 6 秒左右，
+   *   Rescue 激活后出画面明显更快；缓冲余量变小的部分由已有的
+   *   1 秒一次的 refillIfNeeded() 自动补上，不影响持续播放的稳定性。
+   */
+  const SEEK_RESCUE_TIMEOUT_MS = 900;
   const SEEK_RESCUE_DEBOUNCE_MS = 150;
-  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 10;
+  const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 6;
   const SEEK_RESCUE_REFILL_OUTPUT_SEC = 16;
   const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 5;
-  const SEEK_RESCUE_WINDOW_BACK_SEC = 6;
+  const SEEK_RESCUE_WINDOW_BACK_SEC = 4;
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
 
@@ -6812,7 +7164,7 @@ async function initServiceWorker() {
       const initialUntil =
         Math.max(
           SEEK_RESCUE_INITIAL_OUTPUT_SEC,
-          relativeTarget + 4
+          relativeTarget + 2
         );
 
       await this.executeUntil(

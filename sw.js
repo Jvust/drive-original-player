@@ -7,6 +7,11 @@
  * 3. 正确处理 start-end / start- / -suffix 三种 Range。
  * 4. HEAD 返回完整文件长度，而不是错误地返回 1 byte。
  * 5. 把浏览器的 abort signal 传给 Google Drive，拖动后旧请求能尽快停止。
+ * 6. SET_TOKEN 回执只等内存状态写完就返回，不等 Cache Storage 落盘，
+ *    切视频 / 热备预加载不会被落盘 I/O 拖慢（落盘转后台完成）。
+ * 7. 新增 Seek Scrub Prime：播放器拖动进度条、还没松手时就会按估算的
+ *    字节位置提前预热一小块数据；松手真正 seek 命中同一网格时可以
+ *    直接从内存返回，不用再等一次到 Google 的完整网络往返。
  */
 
 const MEDIA_PREFIX = "/drive-original-player/media/";
@@ -21,6 +26,21 @@ const PRIME_BYTES = 2 * 1024 * 1024;
 const PRIME_MAX_ENTRIES = 4;
 const primeMediaCache = new Map();
 
+/*
+ * 拖动进度条预热（Seek Scrub Prime）：
+ * 和上面的“相邻视频预热”是两套独立缓存——这里预热的是
+ * 当前视频里任意字节位置，而不是某个文件开头的固定 2 MB。
+ *
+ * 播放器在用户还在拖动、尚未松手前，会按估算字节位置提前抓一小块
+ * （约 1.5 MB），按 1 MB 网格对齐存起来。松手真正 seek 时如果命中
+ * 同一网格，直接从内存切片返回，不用再等一次到 Google 的完整往返。
+ * 没命中也没有副作用，会自动退回正常的网络请求，不影响正确性。
+ */
+const SEEK_PRIME_ALIGN = 1 * 1024 * 1024;
+const SEEK_PRIME_BYTES = 1.5 * 1024 * 1024;
+const SEEK_PRIME_MAX_ENTRIES = 6;
+const seekPrimeCache = new Map();
+
 // 不再只保存一个 currentFileId。
 // 批量播放/切换视频时，不同文件可以同时存在短暂的请求。
 const fileStates = new Map();
@@ -32,14 +52,26 @@ function authStateUrl(fileId) {
   ).href;
 }
 
-async function saveFileState(fileId, state) {
-  if (!fileId || !state || !state.accessToken) return;
+/*
+ * getFileState() 优先读内存 Map（见下方），所以真正卡在“切换/预热
+ * 前必须等待”这条关键路径上的，只有内存写入这一步。
+ * 这里拆成两步：
+ *   1) saveFileStateMemory：同步写内存，函数一返回就立刻可用；
+ *   2) persistFileState：写 Cache Storage，只用于刷新页面后恢复，
+ *      放到后台完成，不阻塞任何播放 / 切换 / 预热判断。
+ */
+function saveFileStateMemory(fileId, state) {
+  if (!fileId || !state || !state.accessToken) return false;
 
   fileStates.set(fileId, {
     accessToken: state.accessToken,
     fileSize: Number(state.fileSize)
   });
 
+  return true;
+}
+
+async function persistFileState(fileId, state) {
   try {
     const cache = await caches.open(AUTH_STATE_CACHE);
 
@@ -62,6 +94,11 @@ async function saveFileState(fileId, state) {
   } catch (error) {
     console.error("保存 Drive 播放状态失败:", error);
   }
+}
+
+async function saveFileState(fileId, state) {
+  if (!saveFileStateMemory(fileId, state)) return;
+  await persistFileState(fileId, state);
 }
 
 async function getFileState(fileId) {
@@ -161,13 +198,23 @@ async function primeMediaFile({
     return true;
   }
 
-  await saveFileState(
+  saveFileStateMemory(
     fileId,
     {
       accessToken: token,
       fileSize
     }
   );
+
+  // 落盘持久化和随后的 Range 抓取并行进行，不再串行拖慢预热。
+  const persistState =
+    persistFileState(
+      fileId,
+      {
+        accessToken: token,
+        fileSize
+      }
+    );
 
   const end =
     Math.min(
@@ -238,6 +285,10 @@ async function primeMediaFile({
         createdAt:
           Date.now()
       }
+    );
+
+    await persistState.catch(
+      () => {}
     );
 
     return true;
@@ -323,6 +374,314 @@ function getPrimeResponse(
   );
 }
 
+function seekPrimeKey(fileId, alignedStart) {
+  return fileId + ":" + alignedStart;
+}
+
+function touchSeekPrimeCache(key, entry) {
+  if (seekPrimeCache.has(key)) {
+    seekPrimeCache.delete(key);
+  }
+
+  seekPrimeCache.set(key, entry);
+
+  while (
+    seekPrimeCache.size >
+      SEEK_PRIME_MAX_ENTRIES
+  ) {
+    const oldestKey =
+      seekPrimeCache
+        .keys()
+        .next()
+        .value;
+
+    seekPrimeCache.delete(oldestKey);
+  }
+}
+
+async function primeSeekPosition({
+  fileId,
+  token,
+  fileSize,
+  resourceKey,
+  offset
+}) {
+  fileId = String(fileId || "");
+  fileSize = Number(fileSize);
+  offset = Number(offset);
+
+  if (
+    !fileId ||
+    !token ||
+    !Number.isFinite(fileSize) ||
+    fileSize <= 0 ||
+    !Number.isFinite(offset) ||
+    offset < 0
+  ) {
+    return false;
+  }
+
+  const alignedStart =
+    Math.min(
+      Math.floor(
+        offset / SEEK_PRIME_ALIGN
+      ) * SEEK_PRIME_ALIGN,
+      Math.max(0, fileSize - 1)
+    );
+
+  const key =
+    seekPrimeKey(
+      fileId,
+      alignedStart
+    );
+
+  const existing =
+    seekPrimeCache.get(key);
+
+  if (
+    existing &&
+    existing.token === token &&
+    existing.buffer?.byteLength > 0
+  ) {
+    touchSeekPrimeCache(
+      key,
+      existing
+    );
+    return true;
+  }
+
+  // 顺手把 token/大小写进内存状态，防止拖动预热先于 SET_TOKEN 到达。
+  saveFileStateMemory(
+    fileId,
+    {
+      accessToken: token,
+      fileSize
+    }
+  );
+
+  const end =
+    Math.min(
+      fileSize - 1,
+      alignedStart +
+        SEEK_PRIME_BYTES -
+        1
+    );
+
+  const driveURL =
+    "https://www.googleapis.com/drive/v3/files/" +
+    encodeURIComponent(fileId) +
+    "?alt=media";
+
+  const headers =
+    new Headers();
+
+  headers.set(
+    "Authorization",
+    "Bearer " + token
+  );
+
+  headers.set(
+    "Range",
+    `bytes=${alignedStart}-${end}`
+  );
+
+  if (resourceKey) {
+    headers.set(
+      "X-Goog-Drive-Resource-Keys",
+      fileId + "/" + resourceKey
+    );
+  }
+
+  try {
+    const response =
+      await fetch(
+        driveURL,
+        {
+          method: "GET",
+          headers
+        }
+      );
+
+    if (
+      response.status !== 206 &&
+      !response.ok
+    ) {
+      return false;
+    }
+
+    const buffer =
+      await response.arrayBuffer();
+
+    if (!buffer.byteLength) {
+      return false;
+    }
+
+    touchSeekPrimeCache(
+      key,
+      {
+        token,
+        resourceKey:
+          resourceKey || null,
+        start: alignedStart,
+        buffer,
+        contentType:
+          response.headers.get(
+            "Content-Type"
+          ) || "video/mp4",
+        createdAt:
+          Date.now()
+      }
+    );
+
+    return true;
+  } catch (error) {
+    console.debug(
+      "Prime seek position failed:",
+      error
+    );
+    return false;
+  }
+}
+
+function getSeekPrimeResponse(
+  fileId,
+  parsedRange,
+  fileSize
+) {
+  if (
+    !parsedRange ||
+    !Number.isFinite(
+      parsedRange.start
+    )
+  ) {
+    return null;
+  }
+
+  const alignedStart =
+    Math.floor(
+      parsedRange.start /
+        SEEK_PRIME_ALIGN
+    ) * SEEK_PRIME_ALIGN;
+
+  /*
+   * SEEK_PRIME_BYTES（1.5MB）比 SEEK_PRIME_ALIGN（1MB）大一截，
+   * 所以“上一个网格”的缓存条目末尾可能会溢出，覆盖到当前网格
+   * 开头的一小段。这里把当前网格和上一个网格都当候选查一遍，
+   * 哪个真正覆盖到 parsedRange.start 就用哪个，避免明明缓存里
+   * 有数据，却因为只查了一个网格键而白白漏判成没命中。
+   */
+  const candidateStarts = [
+    alignedStart,
+    alignedStart - SEEK_PRIME_ALIGN
+  ];
+
+  for (
+    const candidateStart of
+      candidateStarts
+  ) {
+    if (candidateStart < 0) {
+      continue;
+    }
+
+    const key =
+      seekPrimeKey(
+        String(fileId),
+        candidateStart
+      );
+
+    const entry =
+      seekPrimeCache.get(key);
+
+    if (
+      !entry ||
+      !entry.buffer ||
+      entry.buffer.byteLength <= 0
+    ) {
+      continue;
+    }
+
+    const bufferStart =
+      entry.start;
+
+    const bufferEnd =
+      bufferStart +
+      entry.buffer.byteLength -
+      1;
+
+    // 拖动位置估算不一定精确，落在这个候选缓存范围外就换下一个候选，
+    // 都不命中就交给下面的正常网络请求处理，不强行拼凑。
+    if (
+      parsedRange.start <
+        bufferStart ||
+      parsedRange.start >
+        bufferEnd
+    ) {
+      continue;
+    }
+
+    const availableEnd =
+      Math.min(
+        parsedRange.end,
+        bufferEnd,
+        fileSize - 1
+      );
+
+    if (
+      availableEnd <
+        parsedRange.start
+    ) {
+      continue;
+    }
+
+    touchSeekPrimeCache(
+      key,
+      entry
+    );
+
+    const sliceStart =
+      parsedRange.start -
+      bufferStart;
+
+    const sliceEnd =
+      availableEnd -
+      bufferStart;
+
+    const slice =
+      entry.buffer.slice(
+        sliceStart,
+        sliceEnd + 1
+      );
+
+    if (!slice.byteLength) {
+      continue;
+    }
+
+    return new Response(
+      slice,
+      {
+        status: 206,
+        headers: {
+          "Content-Type":
+            entry.contentType ||
+            "video/mp4",
+          "Content-Length":
+            String(
+              slice.byteLength
+            ),
+          "Content-Range":
+            `bytes ${parsedRange.start}-${availableEnd}/${fileSize}`,
+          "Accept-Ranges":
+            "bytes",
+          "Cache-Control":
+            "no-store"
+        }
+      }
+    );
+  }
+
+  return null;
+}
+
 self.addEventListener("install", () => {
   self.skipWaiting();
 });
@@ -350,33 +709,43 @@ self.addEventListener("message", event => {
     data.fileId &&
     data.token
   ) {
-    const work =
-      saveFileState(
-        String(data.fileId),
-        {
-          accessToken:
-            data.token,
-          fileSize:
-            Number(data.fileSize)
-        }
-      )
-        .then(() => {
-          reply({ ok: true });
-        })
-        .catch(error => {
+    const fileId =
+      String(data.fileId);
+
+    const state = {
+      accessToken: data.token,
+      fileSize:
+        Number(data.fileSize)
+    };
+
+    const ok =
+      saveFileStateMemory(
+        fileId,
+        state
+      );
+
+    /*
+     * 关键优化：回执只等内存写入，不等 Cache Storage 落盘。
+     * getFileState() 优先读内存 Map，播放器这一帧就能开始
+     * 请求媒体，切视频 / 热备预加载不会被落盘 I/O 拖慢。
+     * 落盘只用于刷新页面后的状态恢复，放进 waitUntil 后台完成。
+     */
+    reply({ ok });
+
+    if (ok) {
+      event.waitUntil(
+        persistFileState(
+          fileId,
+          state
+        ).catch(error => {
           console.error(
-            "SET_TOKEN failed:",
+            "SET_TOKEN 持久化失败:",
             error
           );
+        })
+      );
+    }
 
-          reply({
-            ok: false,
-            error:
-              String(error)
-          });
-        });
-
-    event.waitUntil(work);
     return;
   }
 
@@ -395,6 +764,35 @@ self.addEventListener("message", event => {
           Number(data.fileSize),
         resourceKey:
           data.resourceKey || null
+      })
+        .then(ok => {
+          reply({ ok });
+        });
+
+    event.waitUntil(work);
+    return;
+  }
+
+  if (
+    data.type === "PRIME_SEEK" &&
+    data.fileId &&
+    data.token &&
+    Number.isFinite(
+      Number(data.offset)
+    )
+  ) {
+    const work =
+      primeSeekPosition({
+        fileId:
+          data.fileId,
+        token:
+          data.token,
+        fileSize:
+          Number(data.fileSize),
+        resourceKey:
+          data.resourceKey || null,
+        offset:
+          Number(data.offset)
       })
         .then(ok => {
           reply({ ok });
@@ -661,6 +1059,29 @@ async function streamDriveFile(request, url) {
 
     if (primeResponse) {
       return primeResponse;
+    }
+  }
+
+  /*
+   * 拖动进度条时提前预热过的任意字节位置，这里统一查一次。
+   * 命中就直接返回内存切片；没命中/没预热过就自然往下走正常请求。
+   */
+  if (
+    request.method === "GET" &&
+    parsedRange &&
+    Number.isFinite(
+      parsedRange.start
+    )
+  ) {
+    const seekPrimeResponse =
+      getSeekPrimeResponse(
+        fileId,
+        parsedRange,
+        fileSize
+      );
+
+    if (seekPrimeResponse) {
+      return seekPrimeResponse;
     }
   }
 
