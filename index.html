@@ -855,7 +855,6 @@
    * 切视频时只更新 active / 展开状态。
    */
   let videoPlaylistDomReady = false;
-  let adjacentPrimeTimer = null;
   let switchGeneration = 0;
 
   /*
@@ -870,83 +869,10 @@
   let videoTreeScanOpenedFile = null;
 
   /*
-   * Hot Standby / 双播放器热备
-   *
-   * 只真正预加载“下一条”，避免同时下载多个视频抢当前带宽。
-   * 当前视频稳定后，preloadPlayer 会提前解码下一条首帧并准备起播缓冲。
-   */
-  let hotStandbyIndex = -1;
-  let hotStandbyFileId = null;
-  let hotStandbyReady = false;
-  let hotStandbyLoading = false;
-  let hotStandbyGeneration = 0;
-  let hotStandbyRetryTimer = null;
-  let hotStandbyDecodedFrame = false;
-  let hotStandbyPrerollTime = 0;
-  let lastHotSwitchUsed = false;
-
-  /*
-   * V11 · Instant Start Hot Standby
-   *
-   * V9/V10 already decoded a real first frame. V11 goes one step further:
-   * the +1 video is not considered "instant-ready" until its first frame
-   * AND a short contiguous start buffer are both resident.
-   */
-  const HOT_STANDBY_PREFIX_SECONDS = 4.0;
-  const HOT_STANDBY_TARGET_BUFFER_SECONDS = 2.0;
-  const HOT_STANDBY_MIN_BUFFER_SECONDS = 0.8;
-  const HOT_STANDBY_CLICK_WAIT_MS = 450;
-  let hotStandbyBufferedSeconds = 0;
-  let hoverHotStandbyTimer = null;
-
-  /*
-   * V9：不再等 104 个文件夹全部扫描完才开始下一条预热。
-   * 先读取当前视频的直接父文件夹，尽早拿到同目录下一条。
+   * 当前文件夹视频提前发现：只读取目录元数据，不下载任何视频字节。
    */
   let provisionalSiblingVideos = [];
   let earlySiblingDiscoveryRunning = false;
-  let lastAdjacentPrimeSignature = "";
-  let adjacentPrimeDebounceTimer = null;
-
-  /*
-   * V8：后续 3 个视频片头预加载
-   *
-   * 每个目标约缓存前 2.5 秒：
-   * +1：先片头缓存，再继续完整 Hot Standby
-   * +2：片头缓存
-   * +3：片头缓存
-   *
-   * 顺序执行，避免三个 Range 请求同时抢当前视频带宽。
-   */
-  const VIDEO_PREFIX_PRELOAD_COUNT = 3;
-  const VIDEO_PREFIX_PRELOAD_SECONDS = 2.5;
-  let videoPrefixPrimeGeneration = 0;
-  let videoPrefixPrimeState = "已移除";
-
-  /*
-   * V10 Hybrid · 列表悬停/触摸预热
-   *
-   * 复用 V9 的时长感知 PRIME_MEDIA，不退回固定 2MB。
-   * 桌面端鼠标移到视频项、触摸设备按下视频项时，提前预热该视频
-   * 约 2.5 秒片头；如果用户随后点击，就更容易直接命中 SW 内存缓存。
-   */
-  const hoverPrefetchedFileIds = new Set();
-  const HOVER_PREFETCH_MAX_REMEMBERED = 40;
-
-  /*
-   * V10 Hybrid · Seek Scrub Prime
-   *
-   * 拖动进度条过程中，按时间比例估算文件字节位置并向 SW 发 PRIME_SEEK。
-   * 这是启发式优化；非交织 MP4 可能估算不准，因此只做缓存提示，
-   * 绝不替代 V9 原有 Seek Rescue / 正常 Range 路径。
-   */
-  let seekPrefetchLastFireTime = 0;
-  let seekPrefetchLastOffset = -1;
-  let seekPrefetchPendingOffset = null;
-  let seekPrefetchTrailingTimer = null;
-  let seekScrubPrimeState = "已移除";
-  const SEEK_PREFETCH_THROTTLE_MS = 220;
-  const SEEK_PREFETCH_MIN_DELTA_BYTES = 512 * 1024;
 
   function detectSmoothDevice() {
     const ua = navigator.userAgent || "";
@@ -967,7 +893,7 @@
     return uaMobile || androidOrMobile || touchTablet;
   }
 
-  // 仅用于相邻视频预热的带宽/设备启发式判断，不再控制画质模式。
+  // 设备类型仅用于播放器交互适配，不参与后台媒体加载。
   const smoothDeviceMode = detectSmoothDevice();
   let serviceWorkerReady = false;
   const OAUTH_BRIDGE =
@@ -2086,9 +2012,6 @@ function initGpuMediaControls() {
             formatSeconds(player.duration);
         }
 
-        /*
-         * 用户尚未松手时先给目标位置做低风险启发式预热。
-         */
       }
     });
 
@@ -2252,10 +2175,6 @@ async function toggleWebFullscreen() {
 function updateWebFullscreenButton() {
   const fullscreen = !!getFullscreenElement();
 
-  /*
-   * 视频全屏期间背景停止更换；
-   * 退出全屏后重新从 10 秒开始计时。
-   */
   const button = document.getElementById("webFullscreenBtn");
   const fab = document.getElementById("fullscreenFab");
   const gpuButton = document.getElementById("gpuFullscreenBtn");
@@ -2452,36 +2371,6 @@ function buildDiagnosticText() {
       (gpuActive ? gpuColorSpace : "由浏览器原生视频决定"),
     "Seek Rescue：     " +
       getSeekRescueDiagnosticText(),
-    "视频热备：        " +
-      (
-        hotStandbyReady &&
-        hotStandbyDecodedFrame
-          ? (
-              "首帧+起播缓冲已就绪 · " +
-              hotStandbyBufferedSeconds
-                .toFixed(1) +
-              "s · 可秒切"
-            )
-          : (
-              hotStandbyLoading
-                ? "正在下载/预解码下一条"
-                : "待命"
-            )
-      ),
-    "片头预读：        " +
-      videoPrefixPrimeState,
-    "列表悬停预热：    " +
-      hoverPrefetchedFileIds.size +
-      " 条已提示",
-    "拖动位置预热：    " +
-      seekScrubPrimeState,
-    "预读策略：        +1优先4.0秒热备 · +2/+3各2.5秒",
-    "最近切换：        " +
-      (
-        lastHotSwitchUsed
-          ? "Hot Standby 热切"
-          : "普通加载"
-      ),
     "WebGPU：          " +
       (gpuSupported() ? (gpuActive ? "已启用" : "可用") : "不支持"),
     gpuLastError
@@ -2894,9 +2783,6 @@ async function initServiceWorker() {
     return allItems;
   }
 
-  // 视频预加载已移除：目录发现不再触发后台媒体请求。
-  function maybeScheduleAdjacentPrime() {}
-
   async function discoverCurrentFolderVideosEarly(
     openedFile,
     accessToken
@@ -3027,10 +2913,6 @@ async function initServiceWorker() {
         }
       }
 
-      /*
-       * 立即启动 +1 首帧 + 起播缓冲预热，
-       * 不等待 1433223 全树完成。
-       */
     } catch (error) {
       console.debug(
         "提前读取当前文件夹视频失败：",
@@ -3103,21 +2985,13 @@ async function initServiceWorker() {
           player
         );
 
-      const hotPreloadBusy =
-        hotStandbyLoading &&
-        !hotStandbyReady;
-
       const concurrency =
-        hotPreloadBusy
-          ? 1
-          : (
-              (
-                playing ||
-                mediaSensitive
-              )
-                ? 2
-                : 4
-            );
+        (
+          playing ||
+          mediaSensitive
+        )
+          ? 2
+          : 4;
 
       const batch =
         queue.splice(
@@ -3199,16 +3073,9 @@ async function initServiceWorker() {
         resolve =>
           setTimeout(
             resolve,
-            (
-              hotStandbyLoading &&
-              !hotStandbyReady
-            )
-              ? 850
-              : (
-                  mediaBusy
-                    ? 650
-                    : 20
-                )
+            mediaBusy
+              ? 650
+              : 20
           )
       );
     }
@@ -3339,7 +3206,7 @@ async function initServiceWorker() {
       /*
        * 全局扫描还没到当前分支：
        * 保留已经提前拿到的同目录列表，
-       * 不让下一条热备被不完整的全局快照冲掉。
+       * 不让当前同目录列表被不完整的全局快照冲掉。
        */
       nextPlaylist =
         provisionalSiblingVideos
@@ -3446,10 +3313,6 @@ async function initServiceWorker() {
 
     scheduleVideoTreeUiRefresh();
 
-    /*
-     * 如果扫描补出了新的 +1/+2/+3，
-     * 立即更新热备窗口；不再等全树结束。
-     */
   }
 
   async function startVideoTreeScanInBackground(
@@ -3553,11 +3416,6 @@ async function initServiceWorker() {
           null;
       }
 
-      /*
-       * 扫描完成以后，playlist index 才稳定。
-       * 这时再启动 V5 的下一条 Hot Standby，
-       * 避免扫描过程中索引变化导致热备目标漂移。
-       */
       if (
         videoPlaylistDomReady === false
       ) {
@@ -3898,22 +3756,6 @@ async function initServiceWorker() {
 
     return url;
   }
-
-  /*
-   * 视频预加载已移除。
-   * 这些 no-op 仅用于兼容旧调用路径，不创建隐藏播放器、不发 PRIME 请求。
-   */
-  function resetHotStandbyState() {}
-  async function prepareHotStandby() { return false; }
-  function isHotStandbyUsable() { return false; }
-  async function promoteHotStandby() { return false; }
-  function scheduleAdjacentVideoPrime() {}
-  async function primeAdjacentVideos() {}
-  function scheduleHoveredItemHotStandby() {}
-  function cancelHoveredItemHotStandby() {}
-  function prefetchPlaylistItemOnHover() {}
-  function resetSeekScrubPrefetchState() {}
-  function scheduleSeekScrubPrefetch() {}
 
   function renderVideoPlaylist() {
     const items =
