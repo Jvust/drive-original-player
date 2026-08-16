@@ -906,6 +906,18 @@ self.addEventListener("message", event => {
       } catch (_) {}
     };
 
+  /*
+   * 视频预加载已移除。旧标签页即使仍发送 PRIME 消息，
+   * 新 Service Worker 也直接拒绝，不产生任何 Drive 预读请求。
+   */
+  if (
+    data.type === "PRIME_MEDIA" ||
+    data.type === "PRIME_SEEK"
+  ) {
+    reply({ ok: false, disabled: true });
+    return;
+  }
+
   if (
     data.type === "SET_TOKEN" &&
     data.fileId &&
