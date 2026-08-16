@@ -1,0 +1,53 @@
+name: Remove video preloading
+
+on:
+  push:
+    paths:
+      - ".github/workflows/remove-video-preloading.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  remove-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+
+      - name: Remove video preloading
+        run: python .github/scripts/remove_video_preloading.py
+
+      - name: Verify JavaScript and preload removal
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
+          if not scripts:
+              raise SystemExit("No inline script found")
+          Path("/tmp/player-inline.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/player-inline.js
+          node --check sw.js
+          git diff --check
+          ! grep -q 'id="preloadPlayer"' index.html
+          ! grep -q 'preload="auto"' index.html
+          ! grep -q 'type:[[:space:]]*"PRIME_MEDIA"' index.html
+          ! grep -q 'type:[[:space:]]*"PRIME_SEEK"' index.html
+          grep -q 'preload="none"' index.html
+          grep -q 'data.type === "PRIME_MEDIA"' sw.js
+          grep -q 'disabled: true' sw.js
+
+      - name: Commit on-demand player and clean staging files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html sw.js
+          git rm .github/scripts/remove_video_preloading.py
+          git rm .github/workflows/remove-video-preloading.yml
+          git commit -m "Remove video preloading and use on-demand switching"
+          git push origin HEAD:main
