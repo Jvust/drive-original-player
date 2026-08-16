@@ -247,34 +247,6 @@
       max-width: 1500px;
     }
 
-    #backgroundShowcase {
-      display: none;
-      width: min(1500px, 100%);
-      min-height: 100vh;
-      margin-top: 28px;
-      position: relative;
-      pointer-events: none;
-    }
-
-    body.media-ready main {
-      justify-content: flex-start;
-    }
-
-    body.media-ready #backgroundShowcase {
-      display: block;
-    }
-
-    .background-showcase-hint {
-      position: absolute;
-      left: 50%;
-      top: 20px;
-      transform: translateX(-50%);
-      color: rgba(255,255,255,.22);
-      font-size: 10px;
-      letter-spacing: .28em;
-      user-select: none;
-    }
-
     video {
       display: block;
       width: 100%;
@@ -764,82 +736,10 @@
 
 
 
-    /* ============================================================
-     * Sharp Background Slideshow · 5 s
-     * ============================================================ */
-    body::before,
-    body::after {
-      content: none !important;
-      display: none !important;
-      filter: none !important;
-      transform: none !important;
-    }
-
-    html {
-      background: #08090b;
-    }
-
-    body {
-      position: relative;
-      isolation: isolate;
-      background: transparent !important;
-    }
-
-    .page-bg-slide {
-      position: fixed;
-      inset: 0;
-      z-index: -4;
-      pointer-events: none;
-      background-position: center center;
-      background-size: cover;
-      background-repeat: no-repeat;
-      opacity: 0;
-      filter: none !important;
-      transform: none !important;
-      transition: opacity 620ms ease;
-      will-change: opacity;
-    }
-
-    .page-bg-slide.is-visible {
-      opacity: 1;
-    }
-
-    .page-bg-dim {
-      position: fixed;
-      inset: 0;
-      z-index: -3;
-      pointer-events: none;
-      background: linear-gradient(
-        180deg,
-        rgba(4,5,7,.22) 0%,
-        rgba(4,5,7,.34) 45%,
-        rgba(4,5,7,.50) 100%
-      );
-    }
-
-    /* 背景图片本身不做 blur；浮层也不再使用 backdrop-filter。 */
-    header,
-    #welcome,
-    #info,
-    .gallery-head {
-      backdrop-filter: none !important;
-      -webkit-backdrop-filter: none !important;
-    }
-
-    @media (max-width: 700px) {
-      .page-bg-dim {
-        background: rgba(4,5,7,.38);
-      }
-    }
-
 </style>
 </head>
 
 <body>
-  <div id="pageBgSlideA" class="page-bg-slide is-visible" aria-hidden="true"></div>
-  <div id="pageBgSlideB" class="page-bg-slide" aria-hidden="true"></div>
-  <div class="page-bg-dim" aria-hidden="true"></div>
-
 <!-- 仅用于浏览器显示端的实时锐化，不修改/转码 Google Drive 原视频。 -->
 <svg width="0" height="0" aria-hidden="true" focusable="false"
      style="position:absolute;left:-9999px;top:-9999px;overflow:hidden">
@@ -961,10 +861,6 @@
     </div>
   </div>
 
-  <section id="backgroundShowcase" aria-label="背景展示区">
-    <div class="background-showcase-hint">BACKGROUND</div>
-  </section>
-
 </main>
 
 <script>
@@ -985,14 +881,6 @@
   const VIDEO_ROOT_FOLDER_NAME = "1433223";
   const expandedVideoFolders = new Set();
 
-  // 背景直接来自 1433223 递归目录中的图片，不再打包静态壁纸。
-  let backgroundImageFiles = [];
-  let backgroundShuffleQueue = [];
-  let backgroundTimer = null;
-  let backgroundVisibleLayer = null;
-  let backgroundHiddenLayer = null;
-  let backgroundVisibleObjectUrl = null;
-  let backgroundPending = false;
   let videoPlayerEventsReady = false;
   let videoUiTimer = null;
   let userActivityFlag = true;
@@ -1024,13 +912,12 @@
   let videoTreeScannedFolders = 0;
   let videoTreeScanRefreshTimer = null;
   let videoTreeScanOpenedFile = null;
-  let driveBackgroundSlideshowStarted = false;
 
   /*
    * Hot Standby / 双播放器热备
    *
    * 只真正预加载“下一条”，避免同时下载多个视频抢当前带宽。
-   * 当前视频稳定后，preloadPlayer 会提前加载下一条到 canplay。
+   * 当前视频稳定后，preloadPlayer 会提前解码下一条首帧并准备起播缓冲。
    */
   let hotStandbyIndex = -1;
   let hotStandbyFileId = null;
@@ -1041,6 +928,20 @@
   let hotStandbyDecodedFrame = false;
   let hotStandbyPrerollTime = 0;
   let lastHotSwitchUsed = false;
+
+  /*
+   * V11 · Instant Start Hot Standby
+   *
+   * V9/V10 already decoded a real first frame. V11 goes one step further:
+   * the +1 video is not considered "instant-ready" until its first frame
+   * AND a short contiguous start buffer are both resident.
+   */
+  const HOT_STANDBY_PREFIX_SECONDS = 4.0;
+  const HOT_STANDBY_TARGET_BUFFER_SECONDS = 2.0;
+  const HOT_STANDBY_MIN_BUFFER_SECONDS = 0.8;
+  const HOT_STANDBY_CLICK_WAIT_MS = 450;
+  let hotStandbyBufferedSeconds = 0;
+  let hoverHotStandbyTimer = null;
 
   /*
    * V9：不再等 104 个文件夹全部扫描完才开始下一条预热。
@@ -2402,7 +2303,6 @@ function updateWebFullscreenButton() {
    * 视频全屏期间背景停止更换；
    * 退出全屏后重新从 10 秒开始计时。
    */
-  syncDriveBackgroundPauseState();
   const button = document.getElementById("webFullscreenBtn");
   const fab = document.getElementById("fullscreenFab");
   const gpuButton = document.getElementById("gpuFullscreenBtn");
@@ -2604,11 +2504,10 @@ function buildDiagnosticText() {
         hotStandbyReady &&
         hotStandbyDecodedFrame
           ? (
-              "下一条首帧已解码 · " +
-              formatSeconds(
-                hotStandbyPrerollTime
-              ) +
-              " · 可真实热切"
+              "首帧+起播缓冲已就绪 · " +
+              hotStandbyBufferedSeconds
+                .toFixed(1) +
+              "s · 可秒切"
             )
           : (
               hotStandbyLoading
@@ -2623,7 +2522,7 @@ function buildDiagnosticText() {
       " 条已提示",
     "拖动位置预热：    " +
       seekScrubPrimeState,
-    "预读策略：        后续3条 × 前2.5秒",
+    "预读策略：        +1优先4.0秒热备 · +2/+3各2.5秒",
     "最近切换：        " +
       (
         lastHotSwitchUsed
@@ -3008,11 +2907,6 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
-        if (isImageFile(file)) {
-          backgroundImageFiles.push(file);
-          continue;
-        }
-
         if (isDriveFolder(file) || isVideoFile(file)) {
           allItems.push(file);
         }
@@ -3103,7 +2997,7 @@ async function initServiceWorker() {
 
           scheduleAdjacentVideoPrime();
         },
-        90
+        40
       );
   }
 
@@ -3238,7 +3132,7 @@ async function initServiceWorker() {
       }
 
       /*
-       * 立即启动 +1 真首帧预解码，
+       * 立即启动 +1 首帧 + 起播缓冲预热，
        * 不等待 1433223 全树完成。
        */
       maybeScheduleAdjacentPrime(
@@ -3316,13 +3210,21 @@ async function initServiceWorker() {
           player
         );
 
+      const hotPreloadBusy =
+        hotStandbyLoading &&
+        !hotStandbyReady;
+
       const concurrency =
-        (
-          playing ||
-          mediaSensitive
-        )
-          ? 2
-          : 4;
+        hotPreloadBusy
+          ? 1
+          : (
+              (
+                playing ||
+                mediaSensitive
+              )
+                ? 2
+                : 4
+            );
 
       const batch =
         queue.splice(
@@ -3404,7 +3306,16 @@ async function initServiceWorker() {
         resolve =>
           setTimeout(
             resolve,
-            mediaBusy ? 650 : 20
+            (
+              hotStandbyLoading &&
+              !hotStandbyReady
+            )
+              ? 850
+              : (
+                  mediaBusy
+                    ? 650
+                    : 20
+                )
           )
       );
     }
@@ -3600,21 +3511,6 @@ async function initServiceWorker() {
           : "none";
     }
 
-    /*
-     * 找到第一批图片后即可启动背景轮播。
-     * 背景本身仍遵循 V4/V6 的：
-     * thumbnail-only + 视频忙时暂停。
-     */
-    if (
-      !driveBackgroundSlideshowStarted &&
-      backgroundImageFiles.length
-    ) {
-      driveBackgroundSlideshowStarted =
-        true;
-
-      startDriveBackgroundSlideshow();
-    }
-
     if (
       !finished
     ) {
@@ -3682,12 +3578,6 @@ async function initServiceWorker() {
 
     videoTreeScanOpenedFile =
       openedFile;
-
-    backgroundImageFiles =
-      [];
-
-    driveBackgroundSlideshowStarted =
-      false;
 
     try {
       /*
@@ -4129,6 +4019,14 @@ async function initServiceWorker() {
     hotStandbyLoading = false;
     hotStandbyDecodedFrame = false;
     hotStandbyPrerollTime = 0;
+    hotStandbyBufferedSeconds = 0;
+
+    if (hoverHotStandbyTimer) {
+      clearTimeout(
+        hoverHotStandbyTimer
+      );
+      hoverHotStandbyTimer = null;
+    }
 
     if (hotStandbyRetryTimer) {
       clearTimeout(
@@ -4181,14 +4079,14 @@ async function initServiceWorker() {
     }
 
     /*
-     * 不让热备抢一个本来就快断流的当前视频。
-     * 4 秒以上前向缓冲即可启动下一条预热。
+     * +1 是秒切关键路径：只要当前视频已有约 1 秒前向缓冲
+     * 就尽早启动热备；+2/+3 仍使用更保守的片头预读门槛。
      */
     if (
       !player.paused &&
       (
         player.readyState < 3 ||
-        getBufferedAhead(player) < 2
+        getBufferedAhead(player) < 1
       )
     ) {
       return false;
@@ -4207,7 +4105,7 @@ async function initServiceWorker() {
 
   function scheduleHotStandbyRetryByFileId(
     fileId,
-    delay = 800
+    delay = 350
   ) {
     if (
       hotStandbyRetryTimer
@@ -4352,6 +4250,144 @@ async function initServiceWorker() {
     );
   }
 
+
+  function getBufferedStartSeconds(video) {
+    if (!video) {
+      return 0;
+    }
+
+    try {
+      for (
+        let i = 0;
+        i < video.buffered.length;
+        i++
+      ) {
+        const start =
+          video.buffered.start(i);
+        const end =
+          video.buffered.end(i);
+
+        /*
+         * 起播缓存必须覆盖片头，而不是只在某个后续时间点有数据。
+         */
+        if (start <= 0.15) {
+          return Math.max(
+            0,
+            end
+          );
+        }
+      }
+    } catch (_) {}
+
+    return 0;
+  }
+
+  async function waitForHotStandbyStartBuffer(
+    video,
+    generation,
+    fileId,
+    targetSeconds =
+      HOT_STANDBY_TARGET_BUFFER_SECONDS,
+    timeout = 5500
+  ) {
+    const started =
+      performance.now();
+
+    let best =
+      getBufferedStartSeconds(
+        video
+      );
+
+    while (
+      performance.now() -
+        started <
+        timeout
+    ) {
+      if (
+        generation !==
+          hotStandbyGeneration ||
+        hotStandbyFileId !==
+          fileId
+      ) {
+        return 0;
+      }
+
+      best = Math.max(
+        best,
+        getBufferedStartSeconds(
+          video
+        )
+      );
+
+      if (
+        best >=
+          targetSeconds
+      ) {
+        return best;
+      }
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            70
+          )
+      );
+    }
+
+    return best;
+  }
+
+  async function waitForHotStandbyUsable(
+    index,
+    timeout =
+      HOT_STANDBY_CLICK_WAIT_MS
+  ) {
+    const file =
+      videoPlaylist[index];
+
+    if (!file?.id) {
+      return false;
+    }
+
+    const started =
+      performance.now();
+
+    while (
+      performance.now() -
+        started <
+        timeout
+    ) {
+      if (
+        isHotStandbyUsable(
+          index
+        )
+      ) {
+        return true;
+      }
+
+      if (
+        hotStandbyFileId !==
+          file.id ||
+        !hotStandbyLoading
+      ) {
+        break;
+      }
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            30
+          )
+      );
+    }
+
+    return isHotStandbyUsable(
+      index
+    );
+  }
+
   async function prerollHotStandbyFirstFrame(
     standby,
     generation,
@@ -4449,6 +4485,17 @@ async function initServiceWorker() {
         3500
       );
 
+    /*
+     * 首帧出现后继续保持静音 preroll，直到片头已有约 2 秒连续缓冲。
+     * 这样热切后不只是“立刻看到画面”，而是能立刻继续运动。
+     */
+    hotStandbyBufferedSeconds =
+      await waitForHotStandbyStartBuffer(
+        standby,
+        generation,
+        fileId
+      );
+
     try {
       standby.pause();
     } catch (_) {}
@@ -4480,7 +4527,14 @@ async function initServiceWorker() {
       decoded &&
       standby.readyState >=
         HTMLMediaElement
-          .HAVE_CURRENT_DATA
+          .HAVE_CURRENT_DATA &&
+      (
+        hotStandbyBufferedSeconds >=
+          HOT_STANDBY_MIN_BUFFER_SECONDS ||
+        standby.readyState >=
+          HTMLMediaElement
+            .HAVE_FUTURE_DATA
+      )
     );
   }
 
@@ -4526,7 +4580,7 @@ async function initServiceWorker() {
     ) {
       scheduleHotStandbyRetryByFileId(
         file.id,
-        700
+        350
       );
 
       return false;
@@ -4552,6 +4606,9 @@ async function initServiceWorker() {
 
     hotStandbyReady =
       false;
+
+    hotStandbyBufferedSeconds =
+      0;
 
     hotStandbyLoading =
       true;
@@ -4610,14 +4667,13 @@ async function initServiceWorker() {
       standby.volume = 0;
       standby.playbackRate = 1;
 
-      if (file.thumbnailLink) {
-        standby.poster =
-          file.thumbnailLink;
-      } else {
-        standby.removeAttribute(
-          "poster"
-        );
-      }
+      /*
+       * 热备槽位已经会解码真实首帧，不再额外请求 Drive poster，
+       * 避免无意义的缩略图网络竞争。
+       */
+      standby.removeAttribute(
+        "poster"
+      );
 
       standby.dataset.hotFileId =
         file.id;
@@ -4667,7 +4723,9 @@ async function initServiceWorker() {
           "下一条已热备：",
           file.name,
           "readyState=",
-          standby.readyState
+          standby.readyState,
+          "startBuffer=",
+          hotStandbyBufferedSeconds.toFixed(2)
         );
       }
 
@@ -4712,6 +4770,13 @@ async function initServiceWorker() {
       standby &&
       hotStandbyReady &&
       hotStandbyDecodedFrame &&
+      (
+        hotStandbyBufferedSeconds >=
+          HOT_STANDBY_MIN_BUFFER_SECONDS ||
+        standby.readyState >=
+          HTMLMediaElement
+            .HAVE_FUTURE_DATA
+      ) &&
       hotStandbyFileId ===
         file.id &&
       standby.dataset.hotFileId ===
@@ -4908,6 +4973,9 @@ async function initServiceWorker() {
     hotStandbyFileId =
       null;
 
+    hotStandbyBufferedSeconds =
+      0;
+
     lastHotSwitchUsed =
       true;
 
@@ -5013,7 +5081,7 @@ async function initServiceWorker() {
      */
     setTimeout(
       scheduleAdjacentVideoPrime,
-      350
+      80
     );
 
     return true;
@@ -5189,7 +5257,9 @@ async function initServiceWorker() {
       await primeVideoPrefix(
         worker,
         target.file,
-        VIDEO_PREFIX_PRELOAD_SECONDS
+        target.offset === 1
+          ? HOT_STANDBY_PREFIX_SECONDS
+          : VIDEO_PREFIX_PRELOAD_SECONDS
       );
 
       if (
@@ -5207,9 +5277,20 @@ async function initServiceWorker() {
       if (
         target.offset === 1
       ) {
-        prepareHotStandby(
+        /*
+         * V11: +1 真热备是最高优先级。
+         * 等首帧 + 起播缓冲真正就绪以后，再花带宽预读 +2/+3。
+         */
+        await prepareHotStandby(
           target.index
         );
+
+        if (
+          generation !==
+            videoPrefixPrimeGeneration
+        ) {
+          return;
+        }
       }
 
       /*
@@ -5243,7 +5324,7 @@ async function initServiceWorker() {
           adjacentPrimeTimer = null;
           primeAdjacentVideos();
         },
-        180
+        60
       );
   }
 
@@ -5372,6 +5453,55 @@ async function initServiceWorker() {
     } catch (_) {
       return null;
     }
+  }
+
+
+  function scheduleHoveredItemHotStandby(
+    index,
+    file
+  ) {
+    if (
+      !file?.id ||
+      index === currentVideoIndex ||
+      !currentVideoStableEnoughForHotPreload()
+    ) {
+      return;
+    }
+
+    if (hoverHotStandbyTimer) {
+      clearTimeout(
+        hoverHotStandbyTimer
+      );
+    }
+
+    hoverHotStandbyTimer =
+      setTimeout(
+        () => {
+          hoverHotStandbyTimer =
+            null;
+
+          if (
+            file.id !==
+              currentFileId
+          ) {
+            prepareHotStandby(
+              index
+            );
+          }
+        },
+        160
+      );
+  }
+
+  function cancelHoveredItemHotStandby() {
+    if (!hoverHotStandbyTimer) {
+      return;
+    }
+
+    clearTimeout(
+      hoverHotStandbyTimer
+    );
+    hoverHotStandbyTimer = null;
   }
 
   function prefetchPlaylistItemOnHover(file) {
@@ -5620,454 +5750,6 @@ async function initServiceWorker() {
         );
     }
   }
-
-  function shuffleBackgroundFiles(files) {
-    const copy = files.slice();
-
-    for (
-      let i = copy.length - 1;
-      i > 0;
-      i--
-    ) {
-      const j =
-        Math.floor(
-          Math.random() *
-          (i + 1)
-        );
-
-      [copy[i], copy[j]] =
-        [copy[j], copy[i]];
-    }
-
-    return copy;
-  }
-
-  const DRIVE_BACKGROUND_INTERVAL_MS =
-    10000;
-
-  const DRIVE_BACKGROUND_THUMB_SIZE =
-    1920;
-
-  function getDriveBackgroundThumbnailUrl(
-    file,
-    size = DRIVE_BACKGROUND_THUMB_SIZE
-  ) {
-    const raw =
-      file &&
-      file.thumbnailLink
-        ? String(
-            file.thumbnailLink
-          )
-        : "";
-
-    if (!raw) {
-      return null;
-    }
-
-    /*
-     * Drive thumbnailLink 常见结尾：
-     * ...=s220
-     * ...=s220-c
-     *
-     * 背景只需要约 1920px 的轻量图，
-     * 不再读取 Drive 原图。
-     */
-    if (
-      /=s\d+(?:-c)?$/i.test(raw)
-    ) {
-      return raw.replace(
-        /=s\d+(?:-c)?$/i,
-        `=s${size}`
-      );
-    }
-
-    return raw;
-  }
-
-  function preloadDriveBackgroundThumbnail(
-    url,
-    timeout = 8000
-  ) {
-    return new Promise(
-      (resolve, reject) => {
-        if (!url) {
-          reject(
-            new Error(
-              "没有可用的 Drive thumbnailLink"
-            )
-          );
-
-          return;
-        }
-
-        const img =
-          new Image();
-
-        let settled = false;
-
-        const finish =
-          (ok, error) => {
-            if (settled) return;
-
-            settled = true;
-            clearTimeout(timer);
-
-            img.onload = null;
-            img.onerror = null;
-
-            if (ok) {
-              resolve(url);
-            } else {
-              reject(
-                error ||
-                new Error(
-                  "背景缩略图加载失败"
-                )
-              );
-            }
-          };
-
-        img.decoding =
-          "async";
-
-        img.referrerPolicy =
-          "no-referrer";
-
-        img.onload =
-          () => finish(true);
-
-        img.onerror =
-          () =>
-            finish(
-              false,
-              new Error(
-                "背景缩略图加载失败"
-              )
-            );
-
-        const timer =
-          setTimeout(
-            () =>
-              finish(
-                false,
-                new Error(
-                  "背景缩略图加载超时"
-                )
-              ),
-            timeout
-          );
-
-        img.src = url;
-      }
-    );
-  }
-
-  function isDriveBackgroundPaused() {
-    if (document.hidden) {
-      return true;
-    }
-
-    /*
-     * 视频进入网页全屏后：
-     * 完全暂停背景切换。
-     */
-    if (getFullscreenElement()) {
-      return true;
-    }
-
-    const player =
-      document.getElementById(
-        "player"
-      );
-
-    if (!player) {
-      return false;
-    }
-
-    /*
-     * 即使背景已改成轻量 thumbnail，
-     * 视频正在 Seek / Buffering / Rescue 启动时
-     * 仍然不让装饰性背景抢网络或解码资源。
-     */
-    if (
-      player.seeking ||
-      seekRescueActivation ||
-      (
-        !player.paused &&
-        (
-          player.readyState < 3 ||
-          getBufferedAhead(player) < 10
-        )
-      )
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
-  function scheduleDriveBackgroundNext(
-    delay =
-      DRIVE_BACKGROUND_INTERVAL_MS
-  ) {
-    clearTimeout(
-      backgroundTimer
-    );
-
-    backgroundTimer =
-      setTimeout(
-        showNextDriveBackground,
-        delay
-      );
-  }
-
-  function pauseDriveBackgroundSlideshow() {
-    clearTimeout(
-      backgroundTimer
-    );
-
-    backgroundTimer = null;
-  }
-
-  function resumeDriveBackgroundSlideshow(
-    delay =
-      DRIVE_BACKGROUND_INTERVAL_MS
-  ) {
-    if (
-      !backgroundImageFiles.length ||
-      document.hidden
-    ) {
-      return;
-    }
-
-    scheduleDriveBackgroundNext(
-      delay
-    );
-  }
-
-  async function showNextDriveBackground() {
-    if (
-      backgroundPending ||
-      !backgroundImageFiles.length
-    ) {
-      scheduleDriveBackgroundNext(
-        1000
-      );
-
-      return;
-    }
-
-    if (
-      isDriveBackgroundPaused()
-    ) {
-      /*
-       * 暂停状态只检查，不更换背景。
-       * 退出全屏/视频稳定后，再重新开始 10 秒计时。
-       */
-      scheduleDriveBackgroundNext(
-        1000
-      );
-
-      return;
-    }
-
-    backgroundPending = true;
-
-    try {
-      let nextFile = null;
-      let thumbnailUrl = null;
-
-      /*
-       * 最多尝试 8 张。
-       * 某些 Drive 图片可能没有 thumbnailLink，
-       * 直接跳过，不回退到原图下载。
-       */
-      for (
-        let attempt = 0;
-        attempt < 8;
-        attempt++
-      ) {
-        if (
-          !backgroundShuffleQueue.length
-        ) {
-          backgroundShuffleQueue =
-            shuffleBackgroundFiles(
-              backgroundImageFiles
-            );
-        }
-
-        nextFile =
-          backgroundShuffleQueue
-            .shift();
-
-        thumbnailUrl =
-          getDriveBackgroundThumbnailUrl(
-            nextFile
-          );
-
-        if (thumbnailUrl) {
-          break;
-        }
-      }
-
-      if (!thumbnailUrl) {
-        scheduleDriveBackgroundNext(
-          DRIVE_BACKGROUND_INTERVAL_MS
-        );
-
-        return;
-      }
-
-      await preloadDriveBackgroundThumbnail(
-        thumbnailUrl
-      );
-
-      /*
-       * 图片加载期间如果刚好进入全屏/Seek，
-       * 不执行切换。
-       */
-      if (
-        isDriveBackgroundPaused()
-      ) {
-        scheduleDriveBackgroundNext(
-          DRIVE_BACKGROUND_INTERVAL_MS
-        );
-
-        return;
-      }
-
-      backgroundHiddenLayer
-        .style
-        .backgroundImage =
-          `url("${thumbnailUrl}")`;
-
-      await new Promise(
-        resolve =>
-          requestAnimationFrame(
-            () =>
-              requestAnimationFrame(
-                resolve
-              )
-          )
-      );
-
-      backgroundHiddenLayer
-        .classList
-        .add(
-          "is-visible"
-        );
-
-      backgroundVisibleLayer
-        .classList
-        .remove(
-          "is-visible"
-        );
-
-      const oldLayer =
-        backgroundVisibleLayer;
-
-      backgroundVisibleLayer =
-        backgroundHiddenLayer;
-
-      backgroundHiddenLayer =
-        oldLayer;
-
-      /*
-       * thumbnail URL 由浏览器 HTTP cache 管理，
-       * 不再创建 / revoke 大型原图 Blob URL。
-       */
-      backgroundVisibleObjectUrl =
-        null;
-
-      scheduleDriveBackgroundNext(
-        DRIVE_BACKGROUND_INTERVAL_MS
-      );
-    } catch (error) {
-      console.debug(
-        "Drive 背景缩略图轮播失败：",
-        error
-      );
-
-      scheduleDriveBackgroundNext(
-        2500
-      );
-    } finally {
-      backgroundPending = false;
-    }
-  }
-
-  function startDriveBackgroundSlideshow() {
-    pauseDriveBackgroundSlideshow();
-
-    const a =
-      document.getElementById(
-        "pageBgSlideA"
-      );
-
-    const b =
-      document.getElementById(
-        "pageBgSlideB"
-      );
-
-    if (!a || !b) return;
-
-    backgroundVisibleLayer = a;
-    backgroundHiddenLayer = b;
-    backgroundShuffleQueue = [];
-
-    a.style.backgroundImage =
-      "none";
-
-    b.style.backgroundImage =
-      "none";
-
-    a.classList.add(
-      "is-visible"
-    );
-
-    b.classList.remove(
-      "is-visible"
-    );
-
-    if (
-      !backgroundImageFiles.length
-    ) {
-      setStatus(
-        "Original · 1433223 中没有可用于背景的图片"
-      );
-
-      return;
-    }
-
-    /*
-     * 第一次允许立即出现一张随机背景；
-     * 后续固定每 10 秒切换。
-     */
-    showNextDriveBackground();
-  }
-
-  function syncDriveBackgroundPauseState() {
-    if (
-      isDriveBackgroundPaused()
-    ) {
-      pauseDriveBackgroundSlideshow();
-      return;
-    }
-
-    /*
-     * 退出全屏 / 页面重新可见后，
-     * 从完整 10 秒开始重新计时，
-     * 不会一退出就立刻跳背景。
-     */
-    resumeDriveBackgroundSlideshow(
-      DRIVE_BACKGROUND_INTERVAL_MS
-    );
-  }
-
-  document.addEventListener(
-    "visibilitychange",
-    syncDriveBackgroundPauseState
-  );
 
   function renderVideoPlaylist() {
     const items =
@@ -6401,8 +6083,19 @@ async function initServiceWorker() {
           prefetchPlaylistItemOnHover(
             file
           );
+
+          scheduleHoveredItemHotStandby(
+            index,
+            file
+          );
         }
       },
+      { passive: true }
+    );
+
+    button.addEventListener(
+      "pointerleave",
+      cancelHoveredItemHotStandby,
       { passive: true }
     );
 
@@ -6417,6 +6110,10 @@ async function initServiceWorker() {
         ) {
           prefetchPlaylistItemOnHover(
             file
+          );
+
+          prepareHotStandby(
+            index
           );
         }
       },
@@ -6535,8 +6232,22 @@ async function initServiceWorker() {
     if (!file) return;
 
     /*
-     * 如果目标就是已经 canplay 的隐藏热备 video，
-     * 直接 DOM 槽位互换，不重新建立网络/解码链。
+     * 如果用户正好在热备即将完成时点击，最多等约 450ms。
+     * 这比立刻丢掉已经进行到一半的解码链再从头加载更快。
+     */
+    if (
+      index !== currentVideoIndex &&
+      hotStandbyFileId === file.id &&
+      hotStandbyLoading &&
+      !hotStandbyReady
+    ) {
+      await waitForHotStandbyUsable(
+        index
+      );
+    }
+
+    /*
+     * 目标已经具备真实首帧 + 起播缓冲时，直接 DOM 槽位互换。
      */
     if (
       index !== currentVideoIndex &&
@@ -8830,10 +8541,6 @@ function authorizeDrive() {
         "playerWrap"
       ).style.display =
         "block";
-
-      document.body.classList.add(
-        "media-ready"
-      );
 
       document.getElementById(
         "videoListBtn"

@@ -28,10 +28,10 @@ const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB：比旧版 16 MB 更适合 seek
 const DEFAULT_PRIME_SECONDS = 2.5;
 const PRIME_FALLBACK_BYTES = 3 * 1024 * 1024;
 const PRIME_MIN_BYTES = 1 * 1024 * 1024;
-const PRIME_MAX_BYTES = 8 * 1024 * 1024;
+const PRIME_MAX_BYTES = 12 * 1024 * 1024;
 const PRIME_SAFETY_FACTOR = 1.35;
 const PRIME_CONTAINER_OVERHEAD = 384 * 1024;
-const PRIME_MAX_ENTRIES = 6;
+const PRIME_MAX_ENTRIES = 4;
 const primeMediaCache = new Map();
 
 /*
