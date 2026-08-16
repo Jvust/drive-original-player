@@ -1,0 +1,54 @@
+name: Apply V11 instant-switch upgrade
+
+on:
+  push:
+    paths:
+      - ".github/scripts/apply_v11_instant_switch.py"
+      - ".github/workflows/apply-v11-instant-switch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+
+      - name: Apply V11 source upgrade
+        run: python .github/scripts/apply_v11_instant_switch.py
+
+      - name: Verify JavaScript and removal
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
+          if not scripts:
+              raise SystemExit("No inline script found")
+          Path("/tmp/player-inline.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/player-inline.js
+          node --check sw.js
+          git diff --check
+          grep -q "HOT_STANDBY_TARGET_BUFFER_SECONDS = 2.0" index.html
+          grep -q "await prepareHotStandby" index.html
+          grep -q "首帧+起播缓冲已就绪" index.html
+          grep -q "const PRIME_MAX_BYTES = 12 \* 1024 \* 1024" sw.js
+          if grep -Eq "pageBgSlide|backgroundShowcase|backgroundImageFiles|startDriveBackgroundSlideshow|syncDriveBackgroundPauseState" index.html; then
+            echo "Background feature was not fully removed"
+            exit 1
+          fi
+
+      - name: Commit V11 and self-clean staging files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html sw.js
+          git rm .github/scripts/apply_v11_instant_switch.py .github/workflows/apply-v11-instant-switch.yml
+          git commit -m "Upgrade to V11 instant start and remove backgrounds"
+          git push origin HEAD:main
