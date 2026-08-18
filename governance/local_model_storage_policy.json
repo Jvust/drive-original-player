@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "scope": "ALL_PROJECTS",
+  "status": "ACTIVE",
+  "rule": "All local model weights, model runtimes with large model payloads, and large inference caches must default to drive D:. Do not install/store model payloads on C: unless the user explicitly overrides this rule.",
+  "preferred_paths": {
+    "ollama_models": "D:\\OllamaModels",
+    "other_local_models": "D:\\<RuntimeOrProject>\\Models",
+    "large_model_caches": "D:\\<RuntimeOrProject>\\Cache"
+  },
+  "preflight": [
+    "Before downloading a local model, verify the destination resolves to D:.",
+    "If a runtime defaults to C:, reconfigure its model/cache directory before downloading weights.",
+    "Do not silently fall back to C: for large model files."
+  ],
+  "exception_policy": "Only an explicit user instruction may override this D-drive default.",
+  "effective_date": "2026-08-19"
+}
