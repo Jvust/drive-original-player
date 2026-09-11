@@ -572,8 +572,12 @@ let currentIndex = 0;
 let gallerySlideshowTimer = null;
 let gallerySlideshowActive = false;
 let gallerySlideshowQueue = [];
+let galleryFolderSlideshowTimer = null;
+let gallerySlideshowOrientation = null;
+let lastGalleryViewportOrientation = null;
 const GALLERY_SLIDESHOW_INTERVAL_MS = 20000;
 const GALLERY_SLIDESHOW_PRELOAD_COUNT = 3;
+const GALLERY_FOLDER_SLIDESHOW_INTERVAL_MS = 10000;
 let zoomScale = 1;
 let panX = 0;
 let panY = 0;
@@ -2323,6 +2327,97 @@ function isGallerySlideshowQueued(id) {
     });
 }
 
+function getGalleryViewportOrientation() {
+  return window.innerHeight > window.innerWidth
+    ? "portrait"
+    : "landscape";
+}
+
+function getGalleryImageOrientation(file) {
+  if (!file) {
+    return "unknown";
+  }
+
+  const metadata =
+    file.imageMediaMetadata || {};
+
+  const width =
+    Number(metadata.width || file.width);
+
+  const height =
+    Number(metadata.height || file.height);
+
+  if (
+    !(width > 0) ||
+    !(height > 0)
+  ) {
+    return "unknown";
+  }
+
+  const squareTolerance =
+    Math.max(width, height) * 0.02;
+
+  if (
+    Math.abs(width - height) <=
+    squareTolerance
+  ) {
+    return "square";
+  }
+
+  return height > width
+    ? "portrait"
+    : "landscape";
+}
+
+function getGallerySlideshowPool(
+  orientation = getGalleryViewportOrientation()
+) {
+  const allIndexes =
+    galleryFiles.map((_, index) => index);
+
+  const matchingIndexes =
+    allIndexes.filter(index => {
+      const imageOrientation =
+        getGalleryImageOrientation(
+          galleryFiles[index]
+        );
+
+      return (
+        imageOrientation === orientation ||
+        imageOrientation === "square"
+      );
+    });
+
+  /*
+   * 方向图片太少时回退到全量，避免画廊只剩一张图无法继续随机。
+   */
+  if (
+    matchingIndexes.length >=
+    Math.min(2, allIndexes.length)
+  ) {
+    return matchingIndexes;
+  }
+
+  return allIndexes;
+}
+
+function ensureGallerySlideshowOrientation() {
+  const orientation =
+    getGalleryViewportOrientation();
+
+  if (
+    gallerySlideshowOrientation !==
+    orientation
+  ) {
+    gallerySlideshowOrientation =
+      orientation;
+
+    gallerySlideshowQueue = [];
+  }
+
+  return orientation;
+}
+
 function preloadGallerySlideshowNext() {
   if (
     !gallerySlideshowActive ||
@@ -2331,10 +2426,25 @@ function preloadGallerySlideshowNext() {
     return;
   }
 
+  const orientation =
+    ensureGallerySlideshowOrientation();
+
+  const pool =
+    getGallerySlideshowPool(
+      orientation
+    );
+
+  const currentIsInPool =
+    pool.includes(currentIndex);
+
   const targetCount =
     Math.min(
       GALLERY_SLIDESHOW_PRELOAD_COUNT,
-      galleryFiles.length - 1
+      Math.max(
+        0,
+        pool.length -
+        (currentIsInPool ? 1 : 0)
+      )
     );
 
   while (
@@ -2348,9 +2458,9 @@ function preloadGallerySlideshowNext() {
       ]);
 
     const candidates =
-      galleryFiles
-        .map((_, index) => index)
-        .filter(index => !blocked.has(index));
+      pool.filter(
+        index => !blocked.has(index)
+      );
 
     for (
       let i = candidates.length - 1;
@@ -2553,6 +2663,59 @@ async function showViewerImage(
     : originalUrl(file);
 }
 
+function stopGalleryFolderSlideshow() {
+  if (galleryFolderSlideshowTimer) {
+    clearInterval(
+      galleryFolderSlideshowTimer
+    );
+
+    galleryFolderSlideshowTimer = null;
+  }
+}
+
+function startGalleryFolderSlideshow() {
+  stopGalleryFolderSlideshow();
+
+  if (
+    galleryFiles.length < 2 ||
+    gallerySlideshowActive
+  ) {
+    return;
+  }
+
+  galleryFolderSlideshowTimer =
+    setInterval(
+      () => {
+        const activeViewer =
+          document.getElementById(
+            "viewer"
+          );
+
+        if (
+          !activeViewer ||
+          !activeViewer.classList.contains(
+            "open"
+          ) ||
+          gallerySlideshowActive
+        ) {
+          stopGalleryFolderSlideshow();
+          return;
+        }
+
+        lastNavigationDirection = 1;
+
+        showViewerImage(
+          currentIndex + 1
+        );
+      },
+      GALLERY_FOLDER_SLIDESHOW_INTERVAL_MS
+    );
+
+  setStatus(
+    "普通浏览 · 每 10 秒自动下一张"
+  );
+}
+
 function openViewer(index, options = {}) {
   const viewer = document.getElementById("viewer");
 
@@ -2567,6 +2730,16 @@ function openViewer(index, options = {}) {
   viewer.setAttribute("aria-hidden","false");
   document.body.style.overflow = "hidden";
   showViewerUi();
+
+  if (
+    options &&
+    options.gallerySlideshow
+  ) {
+    stopGalleryFolderSlideshow();
+  } else {
+    startGalleryFolderSlideshow();
+  }
+
   showViewerImage(index, options);
 }
 
@@ -2746,7 +2919,16 @@ function startFullscreenGallery() {
       GALLERY_SLIDESHOW_INTERVAL_MS
     );
 
-  setStatus("画廊模式 · 每 20 秒随机切换 · 已预加载后面 3 张");
+  const orientationLabel =
+    getGalleryViewportOrientation() === "portrait"
+      ? "竖屏图片"
+      : "横屏图片";
+
+  setStatus(
+    "画廊模式 · " +
+    orientationLabel +
+    " · 每 20 秒随机切换 · 已预加载后面 3 张"
+  );
 }
 
 function stopFullscreenGallery(
@@ -2761,6 +2943,7 @@ function stopFullscreenGallery(
   gallerySlideshowTimer = null;
   gallerySlideshowActive = false;
   gallerySlideshowQueue = [];
+  gallerySlideshowOrientation = null;
 
   if (
     exitFullscreen &&
@@ -2769,6 +2952,68 @@ function stopFullscreenGallery(
     exitViewerFullscreen();
   }
 }
+
+function handleGalleryViewportOrientationChange() {
+  const orientation =
+    getGalleryViewportOrientation();
+
+  if (
+    lastGalleryViewportOrientation ===
+    orientation
+  ) {
+    return;
+  }
+
+  lastGalleryViewportOrientation =
+    orientation;
+
+  if (
+    !gallerySlideshowActive ||
+    galleryFiles.length < 2
+  ) {
+    return;
+  }
+
+  gallerySlideshowOrientation =
+    orientation;
+  gallerySlideshowQueue = [];
+
+  const activeViewer =
+    document.getElementById(
+      "viewer"
+    );
+
+  if (
+    !activeViewer ||
+    !activeViewer.classList.contains(
+      "open"
+    )
+  ) {
+    return;
+  }
+
+  const nextIndex =
+    getNextGallerySlideshowIndex();
+
+  lastNavigationDirection = 1;
+
+  showViewerImage(
+    nextIndex,
+    {
+      gallerySlideshow: true
+    }
+  );
+}
+
+window.addEventListener(
+  "resize",
+  handleGalleryViewportOrientationChange
+);
+
+window.addEventListener(
+  "orientationchange",
+  handleGalleryViewportOrientationChange
+);
 
 function syncViewerFullscreenState() {
   const fullscreen =
@@ -2815,11 +3060,13 @@ function handleViewerFullscreenChange() {
     !isViewerFullscreen()
   ) {
     stopFullscreenGallery(false);
+    startGalleryFolderSlideshow();
   }
 }
 
 function closeViewer() {
   stopFullscreenGallery();
+  stopGalleryFolderSlideshow();
   const viewer = document.getElementById("viewer");
   clearTimeout(viewerUiTimer);
   viewerUiTimer = null;
