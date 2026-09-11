@@ -896,6 +896,9 @@
   // 设备类型仅用于播放器交互适配；暂停时允许浏览器继续后台缓冲。
   const smoothDeviceMode = detectSmoothDevice();
   let serviceWorkerReady = false;
+  let pausedBufferTimer = null;
+  let pausedBufferFailedFileId = null;
+  const PAUSED_BUFFER_START_DELAY_MS = 1200;
   const OAUTH_BRIDGE =
   "https://drive-oauth-bridge.143322378jb.workers.dev";
 
@@ -2555,11 +2558,42 @@ async function initServiceWorker() {
   }
 
 
+  function cancelPausedBufferingSchedule() {
+    if (pausedBufferTimer) {
+      clearTimeout(pausedBufferTimer);
+      pausedBufferTimer = null;
+    }
+  }
+
+  function isPlayerBufferedToEnd(player) {
+    const duration = Number(player?.duration);
+    const current = Number(player?.currentTime);
+
+    if (
+      !Number.isFinite(duration) ||
+      duration <= 0 ||
+      !Number.isFinite(current)
+    ) {
+      return false;
+    }
+
+    try {
+      for (let index = 0; index < player.buffered.length; index++) {
+        if (
+          current >= player.buffered.start(index) - 0.1 &&
+          player.buffered.end(index) >= duration - 0.25
+        ) {
+          return true;
+        }
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
   /*
-   * 暂停时继续让浏览器媒体栈读取 Drive Range。
-   *
-   * preload=auto 是浏览器原生的后台缓冲开关；
-   * 不改变 paused 状态，也不主动模拟播放。
+   * 先依赖浏览器原生的 preload=auto。
+   * 如果暂停后缓冲端点不再前进，再启用 Seek Rescue 的 MSE 通道。
    */
   function keepBufferingWhilePaused(player) {
     if (!player || !player.currentSrc) {
@@ -2575,7 +2609,65 @@ async function initServiceWorker() {
     if (player.networkState === 0) {
       player.load();
     }
+
+    cancelPausedBufferingSchedule();
+
+    const initialAhead = getBufferedAhead(player);
+
+    pausedBufferTimer = setTimeout(() => {
+      pausedBufferTimer = null;
+
+      const activePlayer = document.getElementById("player");
+      const file = videoPlaylist[currentVideoIndex];
+
+      if (
+        !activePlayer ||
+        activePlayer !== player ||
+        !activePlayer.paused ||
+        !activePlayer.currentSrc ||
+        !isMp4VideoFile(file) ||
+        pausedBufferFailedFileId === file.id ||
+        seekRescueActivation ||
+        (seekRescueSession && seekRescueSession.active)
+      ) {
+        return;
+      }
+
+      if (isPlayerBufferedToEnd(activePlayer)) {
+        return;
+      }
+
+      const currentAhead = getBufferedAhead(activePlayer);
+
+      /*
+       * 原生缓冲仍在增长时继续观察；只有真的停住才切换 MSE。
+       */
+      if (currentAhead > initialAhead + 0.5) {
+        keepBufferingWhilePaused(activePlayer);
+        return;
+      }
+
+      activateSeekRescue(
+        activePlayer.currentTime,
+        "paused background buffering"
+      ).catch(error => {
+        console.warn("暂停后台缓冲启动失败：", error);
+      });
+    }, PAUSED_BUFFER_START_DELAY_MS);
   }
+
+  /*
+   * 读取 Google Drive Open With 传来的 state
+   *
+   * 形式类似：
+   *
+   * {
+   *   "ids": ["FILE_ID"],
+   *   "resourceKeys": {...},
+   *   "action": "open",
+   *   "userId": "..."
+   * }
+   */
 
 
   /*
@@ -4212,6 +4304,7 @@ async function initServiceWorker() {
       ++switchGeneration;
 
     /* 切换视频时仅停止旧的 Seek Rescue；不启动任何下一条预加载。 */
+    cancelPausedBufferingSchedule();
     destroySeekRescue();
 
     currentVideoIndex = index;
@@ -4448,6 +4541,7 @@ async function initServiceWorker() {
       "play",
       () => {
         if (isActivePlayer()) {
+          cancelPausedBufferingSchedule();
           showWatchUi();
         }
       }
@@ -4572,6 +4666,7 @@ async function initServiceWorker() {
   const SEEK_RESCUE_INITIAL_OUTPUT_SEC = 10;
   const SEEK_RESCUE_REFILL_OUTPUT_SEC = 16;
   const SEEK_RESCUE_REFILL_THRESHOLD_SEC = 5;
+  const SEEK_RESCUE_PAUSED_REFILL_OUTPUT_SEC = 16;
   const SEEK_RESCUE_WINDOW_BACK_SEC = 6;
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
@@ -5639,16 +5734,53 @@ async function initServiceWorker() {
           this.player
         );
 
-      if (
-        ahead >
-          SEEK_RESCUE_REFILL_THRESHOLD_SEC
-      ) {
-        return;
-      }
+      let nextUntil;
 
-      const nextUntil =
-        this.generatedUntil +
-        SEEK_RESCUE_REFILL_OUTPUT_SEC;
+      if (this.player.paused) {
+        /*
+         * 暂停时不要在几秒缓冲后停下；持续生成到原文件末尾，
+         * 这样浏览器原生进度条会继续向右推进。
+         */
+        if (this.originalDuration <= 0) {
+          return;
+        }
+
+        const outputEnd = Math.max(
+          0,
+          this.originalDuration - this.windowStart
+        );
+
+        if (
+          this.generatedUntil >=
+          outputEnd - 0.25
+        ) {
+          return;
+        }
+
+        nextUntil = Math.min(
+          this.generatedUntil +
+            SEEK_RESCUE_PAUSED_REFILL_OUTPUT_SEC,
+          outputEnd
+        );
+
+        if (
+          !(nextUntil >
+            this.generatedUntil + 0.05)
+        ) {
+          return;
+        }
+      } else {
+        if (
+          ahead >
+            SEEK_RESCUE_REFILL_THRESHOLD_SEC
+        ) {
+          return;
+        }
+
+        nextUntil =
+          this.generatedUntil +
+          SEEK_RESCUE_REFILL_OUTPUT_SEC;
+      }
 
       try {
         await this.executeUntil(
@@ -5833,6 +5965,9 @@ async function initServiceWorker() {
 
     if (!player) return;
 
+    const pausedBuffering =
+      reason === "paused background buffering";
+
     if (
       seekRescueSession &&
       seekRescueSession.active
@@ -5886,12 +6021,17 @@ async function initServiceWorker() {
     seekRescuePreparedSession = null;
     seekRescuePreparedFileId = null;
     seekRescueSession = session;
-    showSeekHoldOverlay(targetTime);
+
+    if (!pausedBuffering) {
+      showSeekHoldOverlay(targetTime);
+    }
 
     seekRescueActivation =
       (async () => {
         setStatus(
-          "Seek Rescue V2 · 正在随机读取并重封装…"
+          pausedBuffering
+            ? "暂停时正在后台缓冲…"
+            : "Seek Rescue V2 · 正在随机读取并重封装…"
         );
 
         console.warn(
@@ -5906,29 +6046,35 @@ async function initServiceWorker() {
         try {
           await session.activate(
             targetTime,
-            shouldPlay
+            pausedBuffering
+              ? !player.paused
+              : shouldPlay
           );
 
-          rememberSeekRescue(
-            file.id
-          );
-
-          const quality =
-            document.getElementById(
-              "quality"
+          if (!pausedBuffering) {
+            rememberSeekRescue(
+              file.id
             );
 
-          if (
-            quality &&
-            !quality.textContent
-              .includes("Rescue V2")
-          ) {
-            quality.textContent +=
-              " · Rescue V2";
+            const quality =
+              document.getElementById(
+                "quality"
+              );
+
+            if (
+              quality &&
+              !quality.textContent
+                .includes("Rescue V2")
+            ) {
+              quality.textContent +=
+                " · Rescue V2";
+            }
           }
 
           setStatus(
-            "Original · Seek Rescue V2"
+            pausedBuffering
+              ? "Original · 暂停时后台缓冲"
+              : "Original · Seek Rescue V2"
           );
 
           return true;
@@ -5949,13 +6095,21 @@ async function initServiceWorker() {
           }
 
           setStatus(
-            "Seek Rescue V2 失败 · 回退原生播放"
+            pausedBuffering
+              ? "暂停后台缓冲失败 · 保持原生播放"
+              : "Seek Rescue V2 失败 · 回退原生播放"
           );
+
+          if (pausedBuffering) {
+            pausedBufferFailedFileId = file.id;
+          }
 
           await restoreNativeAfterRescueFailure(
             file,
             targetTime,
-            shouldPlay
+            pausedBuffering
+              ? !player.paused
+              : shouldPlay
           );
 
           return false;
