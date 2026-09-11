@@ -2578,9 +2578,6 @@ function startFullscreenGallery() {
     return;
   }
 
-  const viewer =
-    document.getElementById("viewer");
-
   stopFullscreenGallery(false);
   gallerySlideshowActive = true;
 
@@ -2680,9 +2677,14 @@ function syncViewerFullscreenState() {
         : "全屏";
   }
 
+}
+
+function handleViewerFullscreenChange() {
+  syncViewerFullscreenState();
+
   if (
     gallerySlideshowActive &&
-    !fullscreen
+    !isViewerFullscreen()
   ) {
     stopFullscreenGallery(false);
   }
@@ -2759,12 +2761,12 @@ const viewerImage = document.getElementById("viewerImage");
 
 document.addEventListener(
   "fullscreenchange",
-  syncViewerFullscreenState
+  handleViewerFullscreenChange
 );
 
 document.addEventListener(
   "webkitfullscreenchange",
-  syncViewerFullscreenState
+  handleViewerFullscreenChange
 );
 
 /*
