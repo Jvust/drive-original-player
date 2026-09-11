@@ -35,6 +35,17 @@
     .gallery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 4px 0 16px; }
     .gallery-head h1 { font-size: 20px; margin: 0; }
     #count { color: #999; font-size: 13px; }
+    .gallery-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+    .gallery-actions button {
+      min-height: 34px;
+      padding: 8px 12px;
+    }
     #grid { display: block; }
     .folder-section { margin: 0 0 24px; }
     .folder-section-head {
@@ -164,6 +175,10 @@
 
     #viewer { position: fixed; inset: 0; z-index: 100; display: none; background: #000; overflow: hidden; touch-action: none; }
     #viewer.open { display: block; }
+    #viewer:fullscreen {
+      width: 100vw;
+      height: 100vh;
+    }
     .viewer-top {
       position: absolute; z-index: 110; top: 0; left: 0; right: 0; min-height: 56px;
       padding: env(safe-area-inset-top, 0) 12px 0; display: flex; align-items: center; gap: 12px;
@@ -401,6 +416,12 @@
       .brand small { display: none; }
       main { padding: 8px; }
       .gallery-head { margin: 6px 2px 12px; }
+      .gallery-actions { gap: 4px; }
+      .gallery-actions button {
+        min-height: 34px;
+        padding: 7px 9px;
+        font-size: 12px;
+      }
       .gallery-folder-images { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
       .card { border-radius: 7px; box-shadow: none; }
       .viewer-top { min-height: 58px; padding-left: 8px; padding-right: 8px; }
@@ -500,7 +521,14 @@
       <div id="error"></div>
     </section>
     <section id="gallery">
-      <div class="gallery-head"><h1 id="galleryTitle">1433223 · 原图文件树</h1><div id="count"></div></div>
+      <div class="gallery-head">
+        <h1 id="galleryTitle">1433223 · 原图文件树</h1>
+        <div class="gallery-actions">
+          <div id="count"></div>
+          <button id="fullscreenGalleryBtn" type="button" onclick="openCurrentImageFullscreen()">全屏</button>
+          <button id="galleryModeBtn" type="button" onclick="startFullscreenGallery()">画廊</button>
+        </div>
+      </div>
       <div id="grid"></div>
     </section>
   </main>
@@ -509,6 +537,7 @@
     <div class="viewer-top">
       <button class="icon-btn" onclick="closeViewer()" aria-label="关闭">×</button>
       <div class="meta"><div id="viewerName"></div><div id="viewerCounter"></div></div>
+      <button class="icon-btn" onclick="toggleViewerFullscreen()" aria-label="全屏" title="全屏">⛶</button>
       <button class="icon-btn" onclick="toggleZoom()" aria-label="缩放">＋</button>
     </div>
     <button id="prevBtn" class="nav-btn" onclick="showPrev()" aria-label="上一张">‹</button>
@@ -540,6 +569,9 @@ let galleryRootFolder = null;
 const expandedGalleryFolders = new Set();
 const GALLERY_ROOT_FOLDER_NAME = "1433223";
 let currentIndex = 0;
+let gallerySlideshowTimer = null;
+let gallerySlideshowActive = false;
+const GALLERY_SLIDESHOW_INTERVAL_MS = 3000;
 let zoomScale = 1;
 let panX = 0;
 let panY = 0;
@@ -2401,7 +2433,263 @@ function openViewer(index) {
   showViewerUi();
   showViewerImage(index);
 }
+
+function isViewerFullscreen() {
+  const viewer = document.getElementById("viewer");
+
+  return !!(
+    viewer &&
+    (
+      document.fullscreenElement === viewer ||
+      document.webkitFullscreenElement === viewer
+    )
+  );
+}
+
+function requestViewerFullscreen() {
+  const viewer = document.getElementById("viewer");
+
+  if (!viewer) {
+    return Promise.resolve(false);
+  }
+
+  const request =
+    viewer.requestFullscreen ||
+    viewer.webkitRequestFullscreen;
+
+  if (typeof request !== "function") {
+    setStatus(
+      "当前浏览器不支持网页全屏，已使用全屏查看器。"
+    );
+
+    return Promise.resolve(false);
+  }
+
+  try {
+    const result =
+      request.call(viewer);
+
+    return Promise.resolve(result)
+      .then(() => {
+        syncViewerFullscreenState();
+        return true;
+      })
+      .catch(error => {
+        console.warn(
+          "进入图片全屏失败：",
+          error
+        );
+        syncViewerFullscreenState();
+        return false;
+      });
+  } catch (error) {
+    console.warn(
+      "进入图片全屏失败：",
+      error
+    );
+
+    return Promise.resolve(false);
+  }
+}
+
+function exitViewerFullscreen() {
+  const exit =
+    document.exitFullscreen ||
+    document.webkitExitFullscreen;
+
+  if (typeof exit !== "function") {
+    return Promise.resolve(false);
+  }
+
+  try {
+    const result =
+      exit.call(document);
+
+    return Promise.resolve(result)
+      .then(() => {
+        syncViewerFullscreenState();
+        return true;
+      })
+      .catch(error => {
+        console.warn(
+          "退出图片全屏失败：",
+          error
+        );
+        return false;
+      });
+  } catch (error) {
+    console.warn(
+      "退出图片全屏失败：",
+      error
+    );
+
+    return Promise.resolve(false);
+  }
+}
+
+function toggleViewerFullscreen() {
+  const viewer = document.getElementById("viewer");
+
+  if (!viewer) {
+    return;
+  }
+
+  if (!viewer.classList.contains("open")) {
+    openViewer(currentIndex);
+  }
+
+  if (isViewerFullscreen()) {
+    exitViewerFullscreen();
+  } else {
+    requestViewerFullscreen();
+  }
+}
+
+function openCurrentImageFullscreen() {
+  if (!galleryFiles.length) {
+    setStatus("当前没有可展示的图片。");
+    return;
+  }
+
+  openViewer(currentIndex);
+  requestViewerFullscreen();
+}
+
+function getRandomGalleryIndex() {
+  if (galleryFiles.length < 2) {
+    return currentIndex;
+  }
+
+  const candidates =
+    galleryFiles
+      .map((_, index) => index)
+      .filter(index => index !== currentIndex);
+
+  return candidates[
+    Math.floor(
+      Math.random() * candidates.length
+    )
+  ];
+}
+
+function startFullscreenGallery() {
+  if (!galleryFiles.length) {
+    setStatus("当前没有可展示的图片。");
+    return;
+  }
+
+  const viewer =
+    document.getElementById("viewer");
+
+  stopFullscreenGallery(false);
+  gallerySlideshowActive = true;
+
+  openViewer(
+    getRandomGalleryIndex()
+  );
+
+  requestViewerFullscreen();
+
+  gallerySlideshowTimer =
+    setInterval(
+      () => {
+        const activeViewer =
+          document.getElementById("viewer");
+
+        if (
+          !gallerySlideshowActive ||
+          !activeViewer ||
+          !activeViewer.classList.contains("open")
+        ) {
+          stopFullscreenGallery(false);
+          return;
+        }
+
+        if (galleryFiles.length < 2) {
+          return;
+        }
+
+        const nextIndex =
+          getRandomGalleryIndex();
+
+        lastNavigationDirection =
+          nextIndex >= currentIndex
+            ? 1
+            : -1;
+
+        showViewerImage(nextIndex);
+      },
+      GALLERY_SLIDESHOW_INTERVAL_MS
+    );
+
+  setStatus("画廊模式 · 每 3 秒随机切换");
+}
+
+function stopFullscreenGallery(
+  exitFullscreen = true
+) {
+  if (gallerySlideshowTimer) {
+    clearInterval(
+      gallerySlideshowTimer
+    );
+  }
+
+  gallerySlideshowTimer = null;
+  gallerySlideshowActive = false;
+
+  if (
+    exitFullscreen &&
+    isViewerFullscreen()
+  ) {
+    exitViewerFullscreen();
+  }
+}
+
+function syncViewerFullscreenState() {
+  const fullscreen =
+    isViewerFullscreen();
+
+  const viewerButton =
+    document.getElementById(
+      "viewerFullscreenBtn"
+    );
+
+  if (viewerButton) {
+    viewerButton.title =
+      fullscreen
+        ? "退出全屏"
+        : "全屏";
+
+    viewerButton.setAttribute(
+      "aria-label",
+      fullscreen
+        ? "退出全屏"
+        : "全屏"
+    );
+  }
+
+  const galleryButton =
+    document.getElementById(
+      "fullscreenGalleryBtn"
+    );
+
+  if (galleryButton) {
+    galleryButton.textContent =
+      fullscreen
+        ? "退出全屏"
+        : "全屏";
+  }
+
+  if (
+    gallerySlideshowActive &&
+    !fullscreen
+  ) {
+    stopFullscreenGallery(false);
+  }
+}
+
 function closeViewer() {
+  stopFullscreenGallery();
   const viewer = document.getElementById("viewer");
   clearTimeout(viewerUiTimer);
   viewerUiTimer = null;
@@ -2468,6 +2756,16 @@ function showViewerUi() {
 
 const viewer = document.getElementById("viewer");
 const viewerImage = document.getElementById("viewerImage");
+
+document.addEventListener(
+  "fullscreenchange",
+  syncViewerFullscreenState
+);
+
+document.addEventListener(
+  "webkitfullscreenchange",
+  syncViewerFullscreenState
+);
 
 /*
  * 手机：
