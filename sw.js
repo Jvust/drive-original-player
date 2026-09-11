@@ -8,7 +8,7 @@
  * 4. HEAD 返回完整文件长度，而不是错误地返回 1 byte。
  * 5. 把浏览器的 abort signal 传给 Google Drive，拖动后旧请求能尽快停止。
  * 6. SET_TOKEN 先写内存并立即 ACK，Cache Storage 后台持久化。
- * 7. 不做后台媒体预加载；媒体字节只由实际播放 / Seek 请求触发。
+ * 7. 不主动发起媒体预取；页面的 preload=auto 可让浏览器在暂停时继续请求媒体字节。
  */
 
 const MEDIA_PREFIX = "/drive-original-player/media/";
