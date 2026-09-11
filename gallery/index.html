@@ -571,7 +571,9 @@ const GALLERY_ROOT_FOLDER_NAME = "1433223";
 let currentIndex = 0;
 let gallerySlideshowTimer = null;
 let gallerySlideshowActive = false;
-const GALLERY_SLIDESHOW_INTERVAL_MS = 3000;
+let gallerySlideshowQueue = [];
+const GALLERY_SLIDESHOW_INTERVAL_MS = 20000;
+const GALLERY_SLIDESHOW_PRELOAD_COUNT = 3;
 let zoomScale = 1;
 let panX = 0;
 let panY = 0;
@@ -2245,6 +2247,7 @@ function preloadOriginalAt(index) {
       of originalPreloadCache
     ) {
       const keep =
+        isGallerySlideshowQueued(id) ||
         galleryFiles.some(
           (item, i) => {
             if (
@@ -2294,6 +2297,119 @@ function preloadOriginalAt(index) {
       }
     }
   }
+}
+
+function isGallerySlideshowQueued(id) {
+  if (
+    !gallerySlideshowActive ||
+    !gallerySlideshowQueue.length
+  ) {
+    return false;
+  }
+
+  return gallerySlideshowQueue
+    .slice(
+      0,
+      GALLERY_SLIDESHOW_PRELOAD_COUNT
+    )
+    .some(index => {
+      const file =
+        galleryFiles[index];
+
+      return !!(
+        file &&
+        file.id === id
+      );
+    });
+}
+
+function preloadGallerySlideshowNext() {
+  if (
+    !gallerySlideshowActive ||
+    galleryFiles.length < 2
+  ) {
+    return;
+  }
+
+  const targetCount =
+    Math.min(
+      GALLERY_SLIDESHOW_PRELOAD_COUNT,
+      galleryFiles.length - 1
+    );
+
+  while (
+    gallerySlideshowQueue.length <
+    targetCount
+  ) {
+    const blocked =
+      new Set([
+        currentIndex,
+        ...gallerySlideshowQueue
+      ]);
+
+    const candidates =
+      galleryFiles
+        .map((_, index) => index)
+        .filter(index => !blocked.has(index));
+
+    for (
+      let i = candidates.length - 1;
+      i > 0;
+      i--
+    ) {
+      const j =
+        Math.floor(
+          Math.random() *
+          (i + 1)
+        );
+
+      [
+        candidates[i],
+        candidates[j]
+      ] = [
+        candidates[j],
+        candidates[i]
+      ];
+    }
+
+    if (!candidates.length) {
+      break;
+    }
+
+    gallerySlideshowQueue.push(
+      ...candidates
+    );
+  }
+
+  for (
+    let i = 0;
+    i <
+      Math.min(
+        GALLERY_SLIDESHOW_PRELOAD_COUNT,
+        gallerySlideshowQueue.length
+      );
+    i++
+  ) {
+    preloadOriginalAt(
+      gallerySlideshowQueue[i]
+    );
+  }
+}
+
+function getNextGallerySlideshowIndex() {
+  if (
+    galleryFiles.length < 2
+  ) {
+    return currentIndex;
+  }
+
+  preloadGallerySlideshowNext();
+
+  if (!gallerySlideshowQueue.length) {
+    return currentIndex;
+  }
+
+  return gallerySlideshowQueue.shift();
 }
 
 function preloadNeighbors(
@@ -2353,11 +2469,23 @@ function preloadNeighbors(
   );
 }
 
-async function showViewerImage(index) {
+async function showViewerImage(
+  index,
+  options = {}
+) {
+  const slideshowMode = !!(
+    options &&
+    options.gallerySlideshow
+  );
   if (!galleryFiles.length) return;
 
   currentIndex = (index + galleryFiles.length) % galleryFiles.length;
   const file = galleryFiles[currentIndex];
+
+  if (slideshowMode) {
+    preloadGallerySlideshowNext();
+  }
+
   const img = document.getElementById("viewerImage");
   const placeholder = document.getElementById("viewerPlaceholder");
   const loading = document.getElementById("viewerLoading");
@@ -2396,7 +2524,15 @@ async function showViewerImage(index) {
     img.style.opacity = "1";
     placeholder.classList.add("hidden");
 
-    preloadNeighbors(currentIndex, lastNavigationDirection);
+    if (slideshowMode) {
+      preloadGallerySlideshowNext();
+    } else {
+      preloadNeighbors(
+        currentIndex,
+        lastNavigationDirection
+      );
+    }
+
     scheduleHQRender(40);
   };
 
@@ -2417,7 +2553,7 @@ async function showViewerImage(index) {
     : originalUrl(file);
 }
 
-function openViewer(index) {
+function openViewer(index, options = {}) {
   const viewer = document.getElementById("viewer");
 
   /*
@@ -2431,7 +2567,7 @@ function openViewer(index) {
   viewer.setAttribute("aria-hidden","false");
   document.body.style.overflow = "hidden";
   showViewerUi();
-  showViewerImage(index);
+  showViewerImage(index, options);
 }
 
 function isViewerFullscreen() {
@@ -2582,7 +2718,10 @@ function startFullscreenGallery() {
   gallerySlideshowActive = true;
 
   openViewer(
-    getRandomGalleryIndex()
+    getNextGallerySlideshowIndex(),
+    {
+      gallerySlideshow: true
+    }
   );
 
   requestViewerFullscreen();
@@ -2607,19 +2746,24 @@ function startFullscreenGallery() {
         }
 
         const nextIndex =
-          getRandomGalleryIndex();
+          getNextGallerySlideshowIndex();
 
         lastNavigationDirection =
           nextIndex >= currentIndex
             ? 1
             : -1;
 
-        showViewerImage(nextIndex);
+        showViewerImage(
+          nextIndex,
+          {
+            gallerySlideshow: true
+          }
+        );
       },
       GALLERY_SLIDESHOW_INTERVAL_MS
     );
 
-  setStatus("画廊模式 · 每 3 秒随机切换");
+  setStatus("画廊模式 · 每 20 秒随机切换 · 已预加载后面 3 张");
 }
 
 function stopFullscreenGallery(
@@ -2633,6 +2777,7 @@ function stopFullscreenGallery(
 
   gallerySlideshowTimer = null;
   gallerySlideshowActive = false;
+  gallerySlideshowQueue = [];
 
   if (
     exitFullscreen &&
