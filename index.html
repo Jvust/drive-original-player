@@ -4679,8 +4679,11 @@ async function initServiceWorker() {
   const SEEK_RESCUE_STORAGE_KEY =
     "drive_original_player_seek_rescue_v2";
 
-  const MEDIABUNNY_MODULE_URL =
-    "https://cdn.jsdelivr.net/npm/mediabunny@1.51.0/+esm";
+  const MEDIABUNNY_MODULE_URLS = [
+    "https://cdn.jsdelivr.net/npm/mediabunny@1.51.0/+esm",
+    "https://unpkg.com/mediabunny@1.51.0?module",
+    "https://esm.sh/mediabunny@1.51.0?bundle"
+  ];
 
   let mediabunnyModulePromise = null;
   let seekRescueSession = null;
@@ -4798,11 +4801,38 @@ async function initServiceWorker() {
   function loadMediabunnyModule() {
     if (!mediabunnyModulePromise) {
       mediabunnyModulePromise =
-        import(MEDIABUNNY_MODULE_URL)
-          .catch(error => {
-            mediabunnyModulePromise = null;
-            throw error;
-          });
+        (async () => {
+          let lastError = null;
+
+          for (
+            const moduleUrl
+            of MEDIABUNNY_MODULE_URLS
+          ) {
+            try {
+              return await import(
+                moduleUrl
+              );
+            } catch (error) {
+              lastError = error;
+
+              console.warn(
+                "Mediabunny CDN 加载失败，尝试下一个：",
+                moduleUrl,
+                error
+              );
+            }
+          }
+
+          throw (
+            lastError ||
+            new Error(
+              "所有 Mediabunny CDN 都无法加载。"
+            )
+          );
+        })().catch(error => {
+          mediabunnyModulePromise = null;
+          throw error;
+        });
     }
 
     return mediabunnyModulePromise;
