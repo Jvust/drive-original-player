@@ -748,7 +748,7 @@
         id="player"
         controls
         playsinline
-        preload="none"
+        preload="auto"
         controlsList="nodownload nofullscreen noremoteplayback">
       </video>
       <canvas id="gpuCanvas" aria-label="WebGPU 视频画面"></canvas>
@@ -893,7 +893,7 @@
     return uaMobile || androidOrMobile || touchTablet;
   }
 
-  // 设备类型仅用于播放器交互适配，不参与后台媒体加载。
+  // 设备类型仅用于播放器交互适配；暂停时允许浏览器继续后台缓冲。
   const smoothDeviceMode = detectSmoothDevice();
   let serviceWorkerReady = false;
   const OAUTH_BRIDGE =
@@ -2552,6 +2552,29 @@ async function initServiceWorker() {
 
   function showError(text) {
     document.getElementById("error").textContent = text;
+  }
+
+
+  /*
+   * 暂停时继续让浏览器媒体栈读取 Drive Range。
+   *
+   * preload=auto 是浏览器原生的后台缓冲开关；
+   * 不改变 paused 状态，也不主动模拟播放。
+   */
+  function keepBufferingWhilePaused(player) {
+    if (!player || !player.currentSrc) {
+      return;
+    }
+
+    player.preload = "auto";
+
+    /*
+     * 如果资源还没有真正进入加载状态，重新触发一次加载。
+     * 已经有元数据/缓冲时不调用 load()，避免重置 currentTime。
+     */
+    if (player.networkState === 0) {
+      player.load();
+    }
   }
 
 
@@ -4242,19 +4265,20 @@ async function initServiceWorker() {
     }
 
     /*
-     * 纯按需加载：只有切换动作真正发生后才设置 src / load。
+     * 选择文件时才设置 src / load；之后由 preload=auto 允许播放或暂停状态继续缓冲。
      */
+    player.preload = "auto";
     player.src = mediaUrl;
     player.load();
     applySharpenMode();
 
     setStatus(
       sharpenMode === 0
-        ? "Original · 流畅模式（按需加载）"
+        ? "Original · 流畅模式（暂停时继续缓冲）"
         : (
             gpuActive
-              ? "Original · WebGPU 高质量渲染 · 按需加载"
-              : "Original · 准备高质量渲染 · 按需加载"
+              ? "Original · WebGPU 高质量渲染 · 暂停时继续缓冲"
+              : "Original · 准备高质量渲染 · 暂停时继续缓冲"
           )
     );
 
@@ -4433,6 +4457,7 @@ async function initServiceWorker() {
       "pause",
       () => {
         if (isActivePlayer()) {
+          keepBufferingWhilePaused(player);
           showWatchUi();
         }
       }
@@ -5596,12 +5621,15 @@ async function initServiceWorker() {
     }
 
     async refillIfNeeded() {
+      /*
+       * 即使用户暂停，也继续补充 MSE 缓冲，
+       * 让加载进度条继续增长。
+       */
       if (
         this.destroyed ||
         !this.active ||
         !this.conversion ||
-        this.conversionBusy ||
-        this.player.paused
+        this.conversionBusy
       ) {
         return;
       }
@@ -5754,6 +5782,7 @@ async function initServiceWorker() {
 
     seekRescueInternalChange = true;
 
+    player.preload = "auto";
     player.src = mediaUrl;
     player.load();
 
