@@ -2565,6 +2565,16 @@ async function initServiceWorker() {
     }
   }
 
+  function isMp4VideoFile(file) {
+    return !!(
+      file &&
+      (
+        file.mimeType === "video/mp4" ||
+        /\.mp4$/i.test(file.name || "")
+      )
+    );
+  }
+
   function isPlayerBufferedToEnd(player) {
     const duration = Number(player?.duration);
     const current = Number(player?.currentTime);
