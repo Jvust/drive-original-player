@@ -898,7 +898,7 @@
   let serviceWorkerReady = false;
   let pausedBufferTimer = null;
   let pausedBufferFailedFileId = null;
-  const PAUSED_BUFFER_START_DELAY_MS = 1200;
+  const PAUSED_BUFFER_START_DELAY_MS = 500;
   const OAUTH_BRIDGE =
   "https://drive-oauth-bridge.143322378jb.workers.dev";
 
@@ -2602,8 +2602,9 @@ async function initServiceWorker() {
   }
 
   /*
-   * 先依赖浏览器原生的 preload=auto。
-   * 如果暂停后缓冲端点不再前进，再启用 Seek Rescue 的 MSE 通道。
+   * 先打开浏览器原生的 preload=auto；
+   * MP4 暂停后短暂等待，然后直接启用 Seek Rescue 的 MSE 通道，
+   * 不依赖浏览器是否愿意继续发起原生媒体请求。
    */
   function keepBufferingWhilePaused(player) {
     if (!player || !player.currentSrc) {
@@ -2621,8 +2622,6 @@ async function initServiceWorker() {
     }
 
     cancelPausedBufferingSchedule();
-
-    const initialAhead = getBufferedAhead(player);
 
     pausedBufferTimer = setTimeout(() => {
       pausedBufferTimer = null;
@@ -2643,20 +2642,19 @@ async function initServiceWorker() {
         return;
       }
 
-      if (isPlayerBufferedToEnd(activePlayer)) {
+      if (
+        activePlayer.readyState < 1 ||
+        !Number.isFinite(activePlayer.duration) ||
+        isPlayerBufferedToEnd(activePlayer)
+      ) {
         return;
       }
-
-      const currentAhead = getBufferedAhead(activePlayer);
 
       /*
-       * 原生缓冲仍在增长时继续观察；只有真的停住才切换 MSE。
+       * 不再等待原生缓冲自己停住：
+       * 浏览器对 paused + preload=auto 的处理不一致，
+       * MP4 暂停后直接交给 MSE 持续追加到文件末尾。
        */
-      if (currentAhead > initialAhead + 0.5) {
-        keepBufferingWhilePaused(activePlayer);
-        return;
-      }
-
       activateSeekRescue(
         activePlayer.currentTime,
         "paused background buffering"
