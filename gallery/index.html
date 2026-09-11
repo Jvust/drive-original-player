@@ -2691,23 +2691,6 @@ function openCurrentImageFullscreen() {
   requestViewerFullscreen();
 }
 
-function getRandomGalleryIndex() {
-  if (galleryFiles.length < 2) {
-    return currentIndex;
-  }
-
-  const candidates =
-    galleryFiles
-      .map((_, index) => index)
-      .filter(index => index !== currentIndex);
-
-  return candidates[
-    Math.floor(
-      Math.random() * candidates.length
-    )
-  ];
-}
-
 function startFullscreenGallery() {
   if (!galleryFiles.length) {
     setStatus("当前没有可展示的图片。");
