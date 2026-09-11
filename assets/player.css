@@ -1,0 +1,692 @@
+* {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #0b0b0b;
+      color: #ffffff;
+      font-family: Arial, Helvetica, sans-serif;
+      min-height: 100vh;
+    }
+    #player {
+      object-fit: contain;
+    }
+
+
+    #videoStage {
+      position: relative;
+      width: 100%;
+      background: #000;
+      transform-origin: center center;
+      transition: transform 0.25s ease;
+    }
+
+    #videoStage.rotated {
+      transform: rotate(90deg);
+    }
+
+    #videoStage.rotated video,
+    #videoStage.rotated #gpuCanvas {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      object-fit: contain;
+    }
+
+    #gpuCanvas {
+      display: none;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      pointer-events: none;
+    }
+
+    #playerWrap.gpu-active #gpuCanvas {
+      display: block;
+    }
+
+    #seekHoldOverlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 36;
+      background: #000;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    #seekHoldOverlay.active {
+      display: block;
+    }
+
+    #seekHoldCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
+    #seekHoldText {
+      position: absolute;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.68);
+      color: rgba(255,255,255,.90);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #playerWrap.gpu-active #player {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #gpuMediaControls {
+      display: none;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 9px;
+      background: #151515;
+    }
+
+    #playerWrap.gpu-active #gpuMediaControls {
+      display: flex;
+    }
+
+    #gpuMediaControls button {
+      flex: 0 0 auto;
+      padding: 8px 11px;
+      font-size: 13px;
+    }
+
+    #gpuSeek {
+      flex: 1 1 auto;
+      min-width: 90px;
+    }
+
+    #gpuTime {
+      flex: 0 0 auto;
+      min-width: 105px;
+      color: #ccc;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    #gpuVolume {
+      width: 90px;
+    }
+
+    @media (max-width: 700px) {
+      #gpuMediaControls {
+        gap: 6px;
+        padding: 7px;
+      }
+      #gpuVolume {
+        display: none;
+      }
+      #gpuTime {
+        min-width: 88px;
+        font-size: 11px;
+      }
+    }
+
+    header {
+      height: 58px;
+      padding: 0 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #151515;
+      border-bottom: 1px solid #242424;
+    }
+
+    .logo {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    #status {
+      color: #aaa;
+      font-size: 13px;
+    }
+
+    main {
+      min-height: calc(100vh - 58px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    #welcome {
+      text-align: center;
+    }
+
+    #welcome h1 {
+      margin-bottom: 8px;
+      font-size: 26px;
+    }
+
+    #welcome p {
+      color: #999;
+      margin-bottom: 24px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 12px 22px;
+      font-size: 15px;
+      cursor: pointer;
+      background: #ffffff;
+      color: #111111;
+    }
+
+    button:hover {
+      background: #e8e8e8;
+    }
+
+    #playerWrap {
+      display: none;
+      position: relative;
+      width: 100%;
+      max-width: 1500px;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      max-height: calc(100vh - 150px);
+      background: #000;
+    }
+
+    .player-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .player-tools button {
+      padding: 9px 14px;
+      font-size: 13px;
+    }
+
+    .quality-mode-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      min-height: 38px;
+      border: 1px solid rgba(255,255,255,.10);
+      border-radius: 9px;
+      background: rgba(20,20,20,.72);
+      color: #d9d9d9;
+      font-size: 13px;
+    }
+
+    .quality-mode-control select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 0;
+      outline: 0;
+      padding: 7px 26px 7px 9px;
+      border-radius: 7px;
+      background:
+        linear-gradient(45deg, transparent 50%, #aaa 50%) right 10px center / 5px 5px no-repeat,
+        linear-gradient(135deg, #aaa 50%, transparent 50%) right 6px center / 5px 5px no-repeat,
+        rgba(255,255,255,.08);
+      color: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .quality-mode-control select option {
+      background: #171717;
+      color: #fff;
+    }
+
+    /* 批量视频：列表只在用户主动打开时覆盖画面。 */
+    #videoQuickControls {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 42;
+      display: flex;
+      gap: 8px;
+      opacity: 1;
+      visibility: visible;
+      transition: opacity .18s ease, visibility .18s ease;
+    }
+
+    #videoQuickControls button {
+      padding: 8px 12px;
+      border-radius: 9px;
+      font-size: 13px;
+      background: rgba(20,20,20,.74);
+      color: #fff;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 2px 14px rgba(0,0,0,.22);
+    }
+
+    #playerWrap.watch-ui-hidden:not(.playlist-open) #videoQuickControls {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    #playlistBackdrop {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 44;
+      background: rgba(0,0,0,.30);
+    }
+
+    #videoPlaylistDrawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 45;
+      width: min(430px, 88vw);
+      display: flex;
+      flex-direction: column;
+      background: rgba(13,13,13,.96);
+      border-left: 1px solid rgba(255,255,255,.12);
+      box-shadow: -18px 0 45px rgba(0,0,0,.35);
+      backdrop-filter: blur(14px);
+      transform: translateX(102%);
+      transition: transform .20s ease;
+      pointer-events: none;
+    }
+
+    #playerWrap.playlist-open #playlistBackdrop {
+      display: block;
+    }
+
+    #playerWrap.playlist-open #videoPlaylistDrawer {
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+
+    .playlist-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 58px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,.10);
+    }
+
+    #playlistTitle {
+      min-width: 0;
+      flex: 1;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .playlist-head button {
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+
+    #videoPlaylistItems {
+      flex: 1 1 auto;
+      overflow: auto;
+      overscroll-behavior: contain;
+      padding: 8px;
+    }
+
+    .video-playlist-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px;
+      margin: 0 0 5px;
+      border-radius: 9px;
+      background: transparent;
+      color: #fff;
+      text-align: left;
+    }
+
+    .video-playlist-item:hover {
+      background: rgba(255,255,255,.09);
+    }
+
+    .video-playlist-item.active {
+      background: rgba(255,255,255,.14);
+      outline: 1px solid rgba(255,255,255,.16);
+    }
+
+    .video-thumb-wrap {
+      position: relative;
+      flex: 0 0 112px;
+      width: 112px;
+      height: 63px;
+      overflow: hidden;
+      border-radius: 7px;
+      background: #222;
+    }
+
+    .video-thumb-wrap img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    .video-thumb-fallback {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 22px;
+    }
+
+    .video-playlist-meta {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .video-playlist-name {
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .video-playlist-sub {
+      margin-top: 5px;
+      color: #919191;
+      font-size: 11px;
+    }
+
+    .drive-tree-folder {
+      margin: 2px 0;
+    }
+
+    .drive-folder-row {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: transparent;
+      color: #ddd;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    .drive-folder-row:hover {
+      background: rgba(255,255,255,.07);
+    }
+
+    .drive-folder-chevron {
+      width: 16px;
+      flex: 0 0 16px;
+      text-align: center;
+      color: #8e8e8e;
+      font-size: 12px;
+      transform: rotate(90deg);
+      transition: transform .15s ease;
+    }
+
+    .drive-tree-folder.collapsed > .drive-folder-row .drive-folder-chevron {
+      transform: rotate(0deg);
+    }
+
+    .drive-folder-icon {
+      flex: 0 0 auto;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .drive-folder-name {
+      min-width: 0;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .drive-folder-count {
+      flex: 0 0 auto;
+      color: #777;
+      font-size: 11px;
+    }
+
+    .drive-folder-children {
+      margin-left: 13px;
+      padding-left: 7px;
+      border-left: 1px solid rgba(255,255,255,.08);
+    }
+
+    .drive-tree-folder.collapsed > .drive-folder-children {
+      display: none;
+    }
+
+    .video-playlist-item.tree-video {
+      margin-left: 0;
+    }
+
+    .video-playlist-item.tree-video .video-thumb-wrap {
+      flex-basis: 96px;
+      width: 96px;
+      height: 54px;
+    }
+
+    .playlist-foot {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+      border-top: 1px solid rgba(255,255,255,.10);
+    }
+
+    .playlist-foot button {
+      flex: 1 1 0;
+      padding: 9px 10px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 700px) {
+      #videoQuickControls {
+        top: 8px;
+        right: 8px;
+        gap: 6px;
+      }
+
+      #videoQuickControls button {
+        padding: 7px 9px;
+        font-size: 12px;
+      }
+
+      #videoPlaylistDrawer {
+        width: min(360px, 90vw);
+      }
+
+      .video-thumb-wrap {
+        flex-basis: 92px;
+        width: 92px;
+        height: 52px;
+      }
+    }
+
+    #diagnosticPanel {
+      display: none;
+      margin-top: 10px;
+      padding: 12px 14px;
+      border: 1px solid #2a2a2a;
+      border-radius: 9px;
+      background: #111;
+      color: #d8d8d8;
+      font-size: 13px;
+      line-height: 1.65;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #diagnosticPanel.open {
+      display: block;
+    }
+
+    /* 沉浸式网页全屏：播放器工具永久退出画面，列表/退出按钮按需唤醒。 */
+    #playerWrap:fullscreen,
+    #playerWrap:-webkit-full-screen {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      margin: 0;
+      padding: 0;
+      background: #000;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #playerWrap:fullscreen #videoStage,
+    #playerWrap:-webkit-full-screen #videoStage {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #playerWrap:fullscreen #videoStage.rotated,
+    #playerWrap:-webkit-full-screen #videoStage.rotated {
+      width: 100vh;
+      height: 100vw;
+    }
+
+    #playerWrap:fullscreen video,
+    #playerWrap:-webkit-full-screen video {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      object-fit: contain;
+    }
+
+    /* 这些只用于设置/诊断，全屏观看时不覆盖视频。 */
+    #playerWrap:fullscreen .player-tools,
+    #playerWrap:fullscreen #diagnosticPanel,
+    #playerWrap:fullscreen #info,
+    #playerWrap:-webkit-full-screen .player-tools,
+    #playerWrap:-webkit-full-screen #diagnosticPanel,
+    #playerWrap:-webkit-full-screen #info {
+      display: none !important;
+    }
+
+    #playerWrap:fullscreen #gpuMediaControls,
+    #playerWrap:-webkit-full-screen #gpuMediaControls {
+      position: absolute;
+      left: 50%;
+      bottom: max(12px, env(safe-area-inset-bottom));
+      z-index: 41;
+      width: min(900px, calc(100vw - 24px));
+      transform: translateX(-50%);
+      margin: 0;
+      background: rgba(0,0,0,.68);
+      backdrop-filter: blur(8px);
+    }
+
+    #playerWrap:fullscreen #videoQuickControls,
+    #playerWrap:-webkit-full-screen #videoQuickControls {
+      top: max(14px, env(safe-area-inset-top));
+      right: max(14px, env(safe-area-inset-right));
+      z-index: 72;
+    }
+
+    #playerWrap:fullscreen #videoListBtn,
+    #playerWrap:-webkit-full-screen #videoListBtn {
+      min-width: 54px;
+      font-weight: 700;
+      background: rgba(10,10,10,.78);
+      border: 1px solid rgba(255,255,255,.16);
+    }
+
+    #playerWrap:fullscreen #videoPlaylistDrawer,
+    #playerWrap:-webkit-full-screen #videoPlaylistDrawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      height: 100vh;
+    }
+
+    #playerWrap:fullscreen #playlistBackdrop,
+    #playerWrap:-webkit-full-screen #playlistBackdrop {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* 全屏无操作时，播放条和两个快捷按钮一起淡出。 */
+    #playerWrap:fullscreen #gpuMediaControls,
+    #playerWrap:fullscreen #videoQuickControls,
+    #playerWrap:-webkit-full-screen #gpuMediaControls,
+    #playerWrap:-webkit-full-screen #videoQuickControls {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity .18s ease, visibility .18s ease;
+    }
+
+    #playerWrap:fullscreen.fullscreen-ui-hidden:not(.playlist-open) #gpuMediaControls,
+    #playerWrap:fullscreen.fullscreen-ui-hidden:not(.playlist-open) #videoQuickControls,
+    #playerWrap:-webkit-full-screen.fullscreen-ui-hidden:not(.playlist-open) #gpuMediaControls,
+    #playerWrap:-webkit-full-screen.fullscreen-ui-hidden:not(.playlist-open) #videoQuickControls {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    #playerWrap:fullscreen.fullscreen-ui-hidden:not(.playlist-open),
+    #playerWrap:-webkit-full-screen.fullscreen-ui-hidden:not(.playlist-open) {
+      cursor: none;
+    }
+
+    #info {
+      padding-top: 12px;
+    }
+
+    #filename {
+      font-size: 14px;
+      color: #ddd;
+    }
+
+    #quality {
+      margin-top: 6px;
+      color: #7fd47f;
+      font-size: 13px;
+    }
+
+    #error {
+      max-width: 760px;
+      color: #ff8e8e;
+      line-height: 1.7;
+      margin-top: 16px;
+      white-space: pre-wrap;
+    }
+
