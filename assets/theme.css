@@ -92,7 +92,7 @@ main { width: min(1260px, calc(100% - 64px)); margin: 34px auto 0; padding: 0; m
 #viewer { background: #090b13; }
 #viewer .viewer-top { background: linear-gradient(#0c1026d9, #0c102600); padding-top: max(18px, env(safe-area-inset-top)); }
 #viewer .icon-btn, #viewer .nav-btn { background: #252c48c9; border: 1px solid #ffffff25; border-radius: 12px; color: #fff; }
-.slideshow-toggle { font-size: 12px; padding: 8px 12px; white-space: nowrap; }
+.slideshow-toggle { pointer-events: auto; cursor: pointer; font-size: 12px; padding: 8px 12px; white-space: nowrap; }
 .slideshow-caption { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 25; border: 1px solid var(--line); background: #141b2bcc; border-radius: 99px; padding: 8px 18px; font-size: 11px; color: #d2d7ec; pointer-events: none; white-space: nowrap; }
 .viewer-ui-hidden .slideshow-caption { opacity: 0; }
 @media (max-width: 800px) {
