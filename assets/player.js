@@ -1978,7 +1978,16 @@ async function initServiceWorker() {
     return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name || "");
   }
 
-  function driveListFields(mediaMetadataField) {
+  function getCachedMediaSnapshot(fileId = null) {
+    const mediaIndex = window.DriveMediaIndex;
+    if (!mediaIndex) return null;
+
+    return fileId
+      ? mediaIndex.findSnapshotForFile(fileId)
+      : mediaIndex.loadSnapshot();
+  }
+
+  function driveListFields() {
     return [
       "id",
       "name",
@@ -1989,13 +1998,14 @@ async function initServiceWorker() {
       "parents",
       "driveId",
       "capabilities",
-      mediaMetadataField
+      "videoMediaMetadata",
+      "imageMediaMetadata"
     ].join(",");
   }
 
   async function fetchDriveMetadata(fileId, accessToken, resourceKey = null) {
     const fields =
-      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata";
+      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata";
 
     const url =
       "https://www.googleapis.com/drive/v3/files/" +
@@ -2095,7 +2105,7 @@ async function initServiceWorker() {
         includeItemsFromAllDrives: "true",
         fields:
           "nextPageToken,files(" +
-          driveListFields("videoMediaMetadata") +
+          driveListFields() +
           ")"
       });
 
@@ -2133,7 +2143,11 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
-        if (isDriveFolder(file) || isVideoFile(file)) {
+        if (
+          isDriveFolder(file) ||
+          isVideoFile(file) ||
+          isImageFile(file)
+        ) {
           allItems.push(file);
         }
       }
@@ -2321,16 +2335,61 @@ async function initServiceWorker() {
   async function buildVideoFolderTreeStreaming(
     rootFolder,
     accessToken,
-    onProgress
+    onProgress,
+    existingRootNode = null
   ) {
-    const rootNode = {
-      file: rootFolder,
-      children: []
-    };
+    const rootNode =
+      existingRootNode &&
+      existingRootNode.file &&
+      existingRootNode.file.id === rootFolder.id
+        ? existingRootNode
+        : {
+            file: rootFolder,
+            children: []
+          };
 
-    const queue = [rootNode];
+    const mediaIndex =
+      window.DriveMediaIndex;
+
     let scannedFolders = 0;
     const MAX_FOLDERS = 5000;
+
+    const isFolderScanned =
+      node =>
+        mediaIndex &&
+        typeof mediaIndex.isFolderScanned ===
+          "function"
+          ? mediaIndex.isFolderScanned(
+              node
+            )
+          : node &&
+            node.mediaIndexScanned === true;
+
+    const queue = [];
+
+    function collectUnscannedFolders(node) {
+      if (
+        !node ||
+        !isDriveFolder(node.file)
+      ) {
+        return;
+      }
+
+      if (!isFolderScanned(node)) {
+        queue.push(node);
+        return;
+      }
+
+      scannedFolders += 1;
+
+      for (const child of node.children || []) {
+        if (isDriveFolder(child.file)) {
+          collectUnscannedFolders(child);
+        }
+      }
+    }
+
+    collectUnscannedFolders(rootNode);
 
     const isMediaSensitiveForTreeScan =
       player =>
@@ -2396,6 +2455,9 @@ async function initServiceWorker() {
               file,
               children: []
             }));
+
+          node.mediaIndexScanned =
+            true;
 
           for (
             const child
@@ -2659,7 +2721,7 @@ async function initServiceWorker() {
       !finished
     ) {
       setStatus(
-        "Original · 播放中 · 后台读取 " +
+        "Original · 播放中 · 同时读取视频与图片 · 后台读取 " +
         (
           videoRootFolder
             ? videoRootFolder.name
@@ -2684,12 +2746,12 @@ async function initServiceWorker() {
                 ? (
                     "Original · WebGPU 高质量渲染 · " +
                     scannedFolders +
-                    " 个文件夹已读取"
+                    " 个文件夹已读取（视频与图片）"
                   )
                 : (
                     "Original · 平衡模式 · " +
                     scannedFolders +
-                    " 个文件夹已读取"
+                    " 个文件夹已读取（视频与图片）"
                   )
             )
       );
@@ -2709,6 +2771,46 @@ async function initServiceWorker() {
       return;
     }
 
+    const cachedSnapshot =
+      getCachedMediaSnapshot(
+        openedFile && openedFile.id
+      );
+
+    if (
+      cachedSnapshot &&
+      cachedSnapshot.complete === true
+    ) {
+      const mediaIndex =
+        window.DriveMediaIndex;
+
+      videoRootFolder =
+        cachedSnapshot.rootFolder ||
+        cachedSnapshot.tree.file;
+
+      videoTreeRoot =
+        cachedSnapshot.tree;
+
+      videoTreeScannedFolders =
+        mediaIndex &&
+        typeof mediaIndex.countFolders ===
+          "function"
+          ? mediaIndex.countFolders(
+              videoTreeRoot
+            )
+          : countVideoTreeFolders(
+              videoTreeRoot
+            );
+
+      applyVideoTreeScanSnapshot(
+        openedFile,
+        videoTreeRoot,
+        videoTreeScannedFolders,
+        true
+      );
+
+      return;
+    }
+
     videoTreeScanInProgress =
       true;
 
@@ -2724,10 +2826,13 @@ async function initServiceWorker() {
        * 先看视频，再沿 parents 向上定位 1433223。
        */
       videoRootFolder =
-        await findVideoRootFolder(
-          openedFile,
-          accessToken
-        );
+        cachedSnapshot &&
+        cachedSnapshot.rootFolder
+          ? cachedSnapshot.rootFolder
+          : await findVideoRootFolder(
+              openedFile,
+              accessToken
+            );
 
       if (!videoRootFolder) {
         return;
@@ -2738,11 +2843,31 @@ async function initServiceWorker() {
        * 让“列表”按钮可以出现；
        * children 会随着后台扫描逐步补全。
        */
-      videoTreeRoot = {
-        file:
-          videoRootFolder,
-        children: []
-      };
+      const reusableSnapshot =
+        cachedSnapshot &&
+        cachedSnapshot.rootFolder &&
+        cachedSnapshot.rootFolder.id ===
+          videoRootFolder.id
+          ? cachedSnapshot
+          : window.DriveMediaIndex &&
+            window.DriveMediaIndex.findSnapshotForRoot(
+              videoRootFolder.id
+            );
+
+      const existingRootNode =
+        reusableSnapshot &&
+        reusableSnapshot.tree &&
+        reusableSnapshot.tree.file &&
+        reusableSnapshot.tree.file.id ===
+          videoRootFolder.id
+          ? reusableSnapshot.tree
+          : null;
+
+      videoTreeRoot =
+        existingRootNode || {
+          file: videoRootFolder,
+          children: []
+        };
 
       const listBtn =
         document.getElementById(
@@ -2768,8 +2893,24 @@ async function initServiceWorker() {
               progress.scannedFolders,
               progress.finished
             );
-          }
+
+            if (window.DriveMediaIndex) {
+              window.DriveMediaIndex.saveSnapshot(
+                videoRootFolder,
+                progress.rootNode,
+                progress.finished
+              );
+            }
+          },
+          existingRootNode
         );
+
+      if (window.DriveMediaIndex) {
+        window.DriveMediaIndex.saveSnapshot(
+          videoRootFolder,
+          videoTreeRoot
+        );
+      }
     } catch (error) {
       /*
        * 后台目录读取失败绝不能打断已经在播放的视频。
@@ -5793,8 +5934,30 @@ async function initServiceWorker() {
       setStatus("检测到 Drive 视频");
 
     } else {
+      const mediaIndex =
+        window.DriveMediaIndex;
 
-      setStatus("等待 Google Drive");
+      const cachedSnapshot =
+        getCachedMediaSnapshot();
+
+      const cachedVideo =
+        mediaIndex && cachedSnapshot
+          ? mediaIndex.findFirstFile(
+              cachedSnapshot.tree,
+              isVideoFile
+            )
+          : null;
+
+      if (cachedVideo) {
+        currentFileId =
+          cachedVideo.id;
+        currentResourceKey =
+          cachedVideo.resourceKey ||
+          null;
+        setStatus("检测到共享视频目录");
+      } else {
+        setStatus("等待 Google Drive");
+      }
 
     } 
    
@@ -5894,12 +6057,36 @@ function authorizeDrive() {
     currentAccessToken = accessToken;
 
     try {
+      const mediaIndex =
+        window.DriveMediaIndex;
+
+      const cachedSnapshot =
+        getCachedMediaSnapshot(
+          currentFileId
+        );
+
+      let openedFile =
+        mediaIndex && cachedSnapshot
+          ? mediaIndex.findFile(
+              cachedSnapshot.tree,
+              currentFileId
+            )
+          : null;
+
+      if (openedFile) {
+        openedFile.resourceKey =
+          openedFile.resourceKey ||
+          currentResourceKey ||
+          null;
+      }
+
+      if (!openedFile) {
       const metadataUrl =
         "https://www.googleapis.com/drive/v3/files/" +
         encodeURIComponent(currentFileId) +
         "?supportsAllDrives=true&fields=" +
         encodeURIComponent(
-          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata"
+          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata"
         );
 
       const headers = { "Authorization": "Bearer " + accessToken };
@@ -5915,8 +6102,9 @@ function authorizeDrive() {
         );
       }
 
-      const openedFile = await metadataResponse.json();
+      openedFile = await metadataResponse.json();
       openedFile.resourceKey = openedFile.resourceKey || currentResourceKey || null;
+      }
 
       if (openedFile.mimeType && openedFile.mimeType.startsWith("image/")) {
         window.location.replace("./gallery/" + window.location.search);
@@ -5978,28 +6166,86 @@ function authorizeDrive() {
         true
       );
 
-      setStatus(
-        "Original · 视频已打开 · 后台读取 " +
-        VIDEO_ROOT_FOLDER_NAME
-      );
+      const usableSnapshot =
+        cachedSnapshot ||
+        getCachedMediaSnapshot(
+          openedFile.id
+        );
 
-      /*
-       * 先单独读取当前视频的直接父文件夹：
-       * 同目录“下一条”通常可以在全树扫描完成前数秒甚至更早开始预解码。
-       */
-      discoverCurrentFolderVideosEarly(
-        openedFile,
-        accessToken
-      );
+      if (
+        mediaIndex &&
+        usableSnapshot &&
+        usableSnapshot.complete === true
+      ) {
+        videoRootFolder =
+          usableSnapshot.rootFolder ||
+          usableSnapshot.tree.file;
 
-      /*
-       * 故意不 await：
-       * 1433223 全树扫描继续与视频播放并行。
-       */
-      startVideoTreeScanInBackground(
-        openedFile,
-        accessToken
-      );
+        videoTreeRoot =
+          usableSnapshot.tree;
+
+        videoTreeScannedFolders =
+          mediaIndex.countFolders(
+            videoTreeRoot
+          );
+
+        applyVideoTreeScanSnapshot(
+          openedFile,
+          videoTreeRoot,
+          videoTreeScannedFolders,
+          true
+        );
+
+        setStatus(
+          "Original · 视频已打开 · 已使用共享媒体目录"
+        );
+      } else {
+        if (
+          mediaIndex &&
+          usableSnapshot
+        ) {
+          videoRootFolder =
+            usableSnapshot.rootFolder ||
+            usableSnapshot.tree.file;
+
+          videoTreeRoot =
+            usableSnapshot.tree;
+
+          applyVideoTreeScanSnapshot(
+            openedFile,
+            videoTreeRoot,
+            mediaIndex.countFolders(
+              videoTreeRoot
+            ),
+            false
+          );
+        }
+
+        setStatus(
+          "Original · 视频已打开 · 同时读取视频与图片 · 后台读取 " +
+          VIDEO_ROOT_FOLDER_NAME
+        );
+
+        /*
+         * 先单独读取当前视频的直接父文件夹：
+         * 同目录“下一条”通常可以在全树扫描完成前数秒甚至更早开始预解码。
+         */
+        if (!usableSnapshot) {
+          discoverCurrentFolderVideosEarly(
+            openedFile,
+            accessToken
+          );
+        }
+
+        /*
+         * 故意不 await：
+         * 1433223 全树扫描继续与视频播放并行。
+         */
+        startVideoTreeScanInBackground(
+          openedFile,
+          accessToken
+        );
+      }
     } catch (err) {
       console.error(err);
       setStatus("读取失败");
@@ -6065,18 +6311,5 @@ document.addEventListener(
 window.addEventListener(
   "focus",
   refreshWorkerAccessToken
-);
-
-/*
- * 从浏览器后退/前进缓存恢复时，重新建立页面和 Drive 目录读取流程。
- * 这样在视频页与图片页之间来回切换，不会复用旧页面的扫描结果。
- */
-window.addEventListener(
-  "pageshow",
-  event => {
-    if (event.persisted) {
-      window.location.reload();
-    }
-  }
 );
 

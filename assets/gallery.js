@@ -124,7 +124,7 @@ async function refreshWorkerAccessToken() {
 function fileResourceKey(fileId) { return resourceKeys && resourceKeys[fileId] ? resourceKeys[fileId] : null; }
 
 async function fetchFileMetadata(fileId) {
-  const fields = ["id","name","mimeType","size","thumbnailLink","capabilities","imageMediaMetadata","parents","driveId","resourceKey"].join(",");
+  const fields = ["id","name","mimeType","size","thumbnailLink","capabilities","imageMediaMetadata","videoMediaMetadata","parents","driveId","resourceKey"].join(",");
   const url = "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?supportsAllDrives=true&fields=" + encodeURIComponent(fields);
   const headers = { "Authorization": "Bearer " + currentAccessToken };
   const key = fileResourceKey(fileId);
@@ -163,6 +163,19 @@ function isImageFile(file) {
     .test(file.name || "");
 }
 
+function isVideoFile(file) {
+  if (!file) return false;
+  if (
+    file.mimeType &&
+    file.mimeType.startsWith("video/")
+  ) {
+    return true;
+  }
+
+  return /\.(mp4|m4v|mov|webm|mkv)$/i
+    .test(file.name || "");
+}
+
 async function fetchGalleryDriveMetadata(fileId) {
   const fields = [
     "id",
@@ -172,6 +185,7 @@ async function fetchGalleryDriveMetadata(fileId) {
     "thumbnailLink",
     "capabilities",
     "imageMediaMetadata",
+    "videoMediaMetadata",
     "parents",
     "driveId",
     "resourceKey"
@@ -288,6 +302,7 @@ async function listGalleryTreeChildren(folderFile) {
             "thumbnailLink",
             "capabilities",
             "imageMediaMetadata",
+            "videoMediaMetadata",
             "resourceKey",
             "parents",
             "driveId"
@@ -351,7 +366,8 @@ async function listGalleryTreeChildren(folderFile) {
 
       if (
         isDriveFolder(file) ||
-        isImageFile(file)
+        isImageFile(file) ||
+        isVideoFile(file)
       ) {
         allItems.push(file);
       }
@@ -390,15 +406,62 @@ async function listGalleryTreeChildren(folderFile) {
   return allItems;
 }
 
-async function buildGalleryFolderTree(rootFolder) {
-  const rootNode = {
-    file: rootFolder,
-    children: []
-  };
+async function buildGalleryFolderTree(
+  rootFolder,
+  existingRootNode = null
+) {
+  const rootNode =
+    existingRootNode &&
+    existingRootNode.file &&
+    existingRootNode.file.id === rootFolder.id
+      ? existingRootNode
+      : {
+          file: rootFolder,
+          children: []
+        };
 
-  const queue = [rootNode];
+  const mediaIndex =
+    window.DriveMediaIndex;
+
   let scannedFolders = 0;
   const MAX_FOLDERS = 5000;
+
+  const isFolderScanned =
+    node =>
+      mediaIndex &&
+      typeof mediaIndex.isFolderScanned ===
+        "function"
+        ? mediaIndex.isFolderScanned(
+            node
+          )
+        : node &&
+          node.mediaIndexScanned === true;
+
+  const queue = [];
+
+  function collectUnscannedFolders(node) {
+    if (
+      !node ||
+      !isDriveFolder(node.file)
+    ) {
+      return;
+    }
+
+    if (!isFolderScanned(node)) {
+      queue.push(node);
+      return;
+    }
+
+    scannedFolders += 1;
+
+    for (const child of node.children || []) {
+      if (isDriveFolder(child.file)) {
+        collectUnscannedFolders(child);
+      }
+    }
+  }
+
+  collectUnscannedFolders(rootNode);
 
   while (queue.length) {
     const batch = queue.splice(0, 4);
@@ -416,6 +479,9 @@ async function buildGalleryFolderTree(rootFolder) {
             children: []
           }));
 
+        node.mediaIndexScanned =
+          true;
+
         for (const child of node.children) {
           if (isDriveFolder(child.file)) {
             queue.push(child);
@@ -425,7 +491,7 @@ async function buildGalleryFolderTree(rootFolder) {
         scannedFolders += 1;
 
         setStatus(
-          "正在读取 " +
+          "正在同时读取视频与图片 · " +
           (rootFolder.name ||
             GALLERY_ROOT_FOLDER_NAME) +
           " · " +
@@ -434,6 +500,14 @@ async function buildGalleryFolderTree(rootFolder) {
         );
       })
     );
+
+    if (mediaIndex) {
+      mediaIndex.saveSnapshot(
+        rootFolder,
+        rootNode,
+        false
+      );
+    }
 
     if (
       scannedFolders +
@@ -446,6 +520,14 @@ async function buildGalleryFolderTree(rootFolder) {
         "，为避免浏览器卡死已停止读取。"
       );
     }
+  }
+
+  if (mediaIndex) {
+    mediaIndex.saveSnapshot(
+      rootFolder,
+      rootNode,
+      true
+    );
   }
 
   return rootNode;
@@ -3082,15 +3164,91 @@ document.addEventListener("keydown", event => {
 window.addEventListener("load", async () => {
   try {
     await initServiceWorker();
+    const mediaIndex = window.DriveMediaIndex;
     const state = parseDriveState();
-    if (!state) { setStatus("等待 Google Drive"); document.getElementById("welcomeText").innerHTML = "请回到 Google Drive，单选文件夹内任意一张图片后使用<br>打开方式 → Drive Original Player。"; return; }
-    driveIds = state.ids; resourceKeys = state.resourceKeys || {};
+    let cachedSnapshot = null;
+    let cachedOpenedFile = null;
+
+    if (state) {
+      driveIds = state.ids;
+      resourceKeys = state.resourceKeys || {};
+
+      if (mediaIndex) {
+        cachedSnapshot =
+          mediaIndex.findSnapshotForFile(
+            driveIds[0]
+          );
+
+        if (cachedSnapshot) {
+          cachedOpenedFile =
+            mediaIndex.findFile(
+              cachedSnapshot.tree,
+              driveIds[0]
+            );
+
+          if (
+            !isImageFile(cachedOpenedFile)
+          ) {
+            cachedOpenedFile =
+              mediaIndex.findFirstFile(
+                cachedSnapshot.tree,
+                isImageFile
+              );
+
+            if (cachedOpenedFile) {
+              driveIds = [
+                cachedOpenedFile.id
+              ];
+              resourceKeys =
+                cachedOpenedFile.resourceKey
+                  ? {
+                      [cachedOpenedFile.id]:
+                        cachedOpenedFile.resourceKey
+                    }
+                  : {};
+            }
+          }
+        }
+      }
+    } else if (mediaIndex) {
+      cachedSnapshot =
+        mediaIndex.loadSnapshot();
+
+      if (cachedSnapshot) {
+        cachedOpenedFile =
+          mediaIndex.findFirstFile(
+            cachedSnapshot.tree,
+            isImageFile
+          );
+
+        if (cachedOpenedFile) {
+          driveIds = [
+            cachedOpenedFile.id
+          ];
+          resourceKeys =
+            cachedOpenedFile.resourceKey
+              ? {
+                  [cachedOpenedFile.id]:
+                    cachedOpenedFile.resourceKey
+                }
+              : {};
+        }
+      }
+    }
+
+    if (!driveIds.length) {
+      setStatus("等待 Google Drive");
+      document.getElementById("welcomeText").innerHTML = "请回到 Google Drive，单选文件夹内任意一张图片后使用<br>打开方式 → Drive Original Player。";
+      return;
+    }
+
     setStatus("正在授权"); currentAccessToken = await getBridgeAccessToken();
     if (!currentAccessToken) { setStatus("需要首次授权"); document.getElementById("welcomeText").textContent = "当前浏览器还没有长期授权。"; document.getElementById("authBtn").style.display = "inline-block"; return; }
     await sendTokenToWorker(currentAccessToken);
     setStatus("正在定位 " + GALLERY_ROOT_FOLDER_NAME);
 
     const openedFile =
+      cachedOpenedFile ||
       await fetchFileMetadata(
         driveIds[0]
       );
@@ -3102,31 +3260,76 @@ window.addEventListener("load", async () => {
     }
 
     try {
-      galleryRootFolder =
-        await findGalleryRootFolder(
-          openedFile
-        );
-
-      if (galleryRootFolder) {
-        setStatus(
-          "正在读取 " +
-          (galleryRootFolder.name ||
-            GALLERY_ROOT_FOLDER_NAME) +
-          " 文件树"
-        );
+      if (
+        mediaIndex &&
+        cachedSnapshot &&
+        cachedOpenedFile &&
+        cachedSnapshot.complete === true
+      ) {
+        galleryRootFolder =
+          cachedSnapshot.rootFolder ||
+          cachedSnapshot.tree.file;
 
         galleryTreeRoot =
-          await buildGalleryFolderTree(
-            galleryRootFolder
-          );
+          cachedSnapshot.tree;
 
         galleryFiles =
           flattenImagesFromTree(
             galleryTreeRoot
           );
+
+        setStatus(
+          "已使用共享视频与图片目录"
+        );
       } else {
-        galleryTreeRoot = null;
-        galleryFiles = [openedFile];
+        galleryRootFolder =
+          cachedSnapshot &&
+          cachedSnapshot.rootFolder &&
+          cachedOpenedFile
+            ? cachedSnapshot.rootFolder
+            : await findGalleryRootFolder(
+                openedFile
+              );
+
+        if (
+          mediaIndex &&
+          galleryRootFolder &&
+          !cachedSnapshot
+        ) {
+          cachedSnapshot =
+            mediaIndex.findSnapshotForRoot(
+              galleryRootFolder.id
+            );
+        }
+
+        if (galleryRootFolder) {
+          setStatus(
+            "正在同时读取视频与图片 · " +
+            (galleryRootFolder.name ||
+              GALLERY_ROOT_FOLDER_NAME) +
+            " 文件树"
+          );
+
+          galleryTreeRoot =
+            await buildGalleryFolderTree(
+              galleryRootFolder,
+              cachedSnapshot &&
+              cachedSnapshot.tree &&
+              cachedSnapshot.tree.file &&
+              cachedSnapshot.tree.file.id ===
+                galleryRootFolder.id
+                ? cachedSnapshot.tree
+                : null
+            );
+
+          galleryFiles =
+            flattenImagesFromTree(
+              galleryTreeRoot
+            );
+        } else {
+          galleryTreeRoot = null;
+          galleryFiles = [openedFile];
+        }
       }
     } catch (treeError) {
       console.warn(
@@ -3216,14 +3419,4 @@ window.addEventListener("load", async () => {
 setInterval(refreshWorkerAccessToken, 30 * 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshWorkerAccessToken(); });
 window.addEventListener("focus", refreshWorkerAccessToken);
-
-/*
- * 从浏览器后退/前进缓存恢复时，重新建立页面和 Drive 目录读取流程。
- * 这样在视频页与图片页之间来回切换，不会复用旧页面的扫描结果。
- */
-window.addEventListener("pageshow", event => {
-  if (event.persisted) {
-    window.location.reload();
-  }
-});
 
