@@ -125,3 +125,356 @@ main { width: min(1260px, calc(100% - 64px)); margin: 34px auto 0; padding: 0; m
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
 
+/* ============================================================
+ * Anime Button System · 星光魔法
+ * ============================================================ */
+:root {
+  --anime-button-ink: #f8f4ff;
+  --anime-button-violet: #9b8dff;
+  --anime-button-pink: #f39ac8;
+  --anime-button-cyan: #91e8ff;
+  --anime-button-line: rgba(215, 203, 255, .34);
+  --anime-button-surface: rgba(29, 31, 70, .94);
+  --anime-button-surface-hover: rgba(53, 45, 104, .98);
+}
+
+button {
+  position: relative;
+  isolation: isolate;
+  min-height: 38px;
+  overflow: hidden;
+  border: 1px solid var(--anime-button-line);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(190, 170, 255, .22), transparent 38%),
+    linear-gradient(135deg, rgba(70, 59, 137, .90), var(--anime-button-surface) 62%, rgba(18, 27, 61, .98));
+  color: var(--anime-button-ink);
+  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-shadow: 0 1px 10px rgba(8, 5, 28, .48);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .16),
+    0 7px 22px rgba(6, 4, 27, .24),
+    0 0 0 1px rgba(137, 119, 255, .07);
+  transition:
+    transform .18s cubic-bezier(.2, .8, .2, 1),
+    background .18s ease,
+    border-color .18s ease,
+    box-shadow .18s ease,
+    color .18s ease,
+    opacity .18s ease;
+}
+
+button:not(:disabled):hover {
+  border-color: rgba(238, 219, 255, .70);
+  background:
+    radial-gradient(circle at 84% 17%, rgba(255, 255, 255, .34) 0 1px, transparent 2px),
+    radial-gradient(circle at 17% 0%, rgba(212, 185, 255, .30), transparent 42%),
+    linear-gradient(135deg, rgba(105, 79, 180, .98), var(--anime-button-surface-hover) 58%, rgba(27, 53, 100, .98));
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .24),
+    0 10px 28px rgba(8, 4, 32, .34),
+    0 0 20px rgba(146, 116, 255, .20);
+}
+
+button:not(:disabled):active {
+  transform: translateY(0) scale(.98);
+  box-shadow:
+    inset 0 2px 8px rgba(10, 5, 35, .28),
+    0 3px 12px rgba(8, 4, 32, .24);
+}
+
+button:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+  filter: saturate(.55);
+  box-shadow: none;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--anime-button-cyan);
+  outline-offset: 3px;
+  box-shadow:
+    0 0 0 4px rgba(145, 232, 255, .16),
+    0 0 22px rgba(145, 232, 255, .34),
+    inset 0 1px 0 rgba(255, 255, 255, .20);
+}
+
+button.primary {
+  border-color: rgba(255, 228, 244, .88);
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 255, 255, .66), transparent 32%),
+    linear-gradient(135deg, #ffe0ef 0%, #f5a6cb 42%, #aa91ff 100%);
+  color: #2b1d4b;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .68),
+    0 9px 26px rgba(202, 107, 176, .28),
+    0 0 22px rgba(243, 154, 200, .18);
+}
+
+button.primary:not(:disabled):hover {
+  border-color: #fff5fb;
+  background:
+    radial-gradient(circle at 84% 17%, rgba(255, 255, 255, .72) 0 1px, transparent 2px),
+    linear-gradient(135deg, #fff0f7 0%, #ffc0dc 40%, #bcaeff 100%);
+  color: #27163f;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .82),
+    0 12px 32px rgba(202, 107, 176, .36),
+    0 0 26px rgba(170, 145, 255, .30);
+}
+
+button.primary::after,
+#downloadBtn:not(:disabled)::after {
+  content: "✦";
+  position: absolute;
+  top: 3px;
+  right: 9px;
+  color: rgba(255, 255, 255, .90);
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 0 8px rgba(255, 255, 255, .82);
+  animation: anime-button-twinkle 2.4s ease-in-out infinite;
+}
+
+.hero-actions button:not(.primary),
+.player-tools button,
+.gallery-actions button:not(.primary),
+#videoQuickControls button,
+#gpuMediaControls button,
+.playlist-head button,
+.playlist-foot button,
+.slideshow-toggle {
+  border-color: rgba(203, 190, 255, .30);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(179, 159, 255, .20), transparent 40%),
+    linear-gradient(135deg, rgba(61, 53, 119, .92), rgba(25, 28, 63, .96));
+}
+
+.player-tools button:not(:disabled):hover,
+.gallery-actions button:not(.primary):not(:disabled):hover,
+#videoQuickControls button:not(:disabled):hover,
+#gpuMediaControls button:not(:disabled):hover,
+.playlist-head button:not(:disabled):hover,
+.playlist-foot button:not(:disabled):hover,
+.slideshow-toggle:not(:disabled):hover {
+  background:
+    radial-gradient(circle at 84% 17%, rgba(255, 255, 255, .32) 0 1px, transparent 2px),
+    linear-gradient(135deg, rgba(111, 80, 182, .98), rgba(47, 40, 96, .98));
+}
+
+#downloadBtn:not(:disabled) {
+  border-color: rgba(145, 232, 255, .62);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(195, 248, 255, .28), transparent 40%),
+    linear-gradient(135deg, rgba(39, 132, 169, .92), rgba(33, 53, 117, .98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .22),
+    0 8px 24px rgba(29, 132, 173, .22),
+    0 0 18px rgba(145, 232, 255, .14);
+}
+
+.quality-mode-control {
+  border-color: rgba(203, 190, 255, .30);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(179, 159, 255, .18), transparent 42%),
+    linear-gradient(135deg, rgba(41, 37, 86, .94), rgba(20, 26, 58, .98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .10),
+    0 7px 20px rgba(6, 4, 27, .18);
+}
+
+.quality-mode-control select {
+  border: 1px solid rgba(196, 183, 255, .28);
+  background:
+    linear-gradient(45deg, transparent 50%, var(--anime-button-cyan) 50%) right 10px center / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--anime-button-cyan) 50%, transparent 50%) right 6px center / 5px 5px no-repeat,
+    rgba(115, 95, 195, .24);
+  color: var(--anime-button-ink);
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+
+.quality-mode-control select:hover,
+.quality-mode-control select:focus-visible {
+  border-color: rgba(145, 232, 255, .72);
+  background-color: rgba(115, 95, 195, .42);
+  box-shadow: 0 0 15px rgba(145, 232, 255, .16);
+}
+
+#videoQuickControls button,
+#gpuMediaControls button {
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#gpuMediaControls {
+  border-color: rgba(181, 164, 255, .30);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .08),
+    0 12px 30px rgba(4, 3, 20, .22);
+}
+
+.drive-folder-row,
+.gallery-folder-row {
+  border: 1px solid rgba(185, 169, 255, .22);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, rgba(90, 69, 155, .26), rgba(25, 30, 68, .72) 52%, rgba(21, 38, 71, .62));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .08),
+    0 5px 16px rgba(5, 4, 24, .16);
+}
+
+.drive-folder-row:not(:disabled):hover,
+.gallery-folder-row:not(:disabled):hover {
+  border-color: rgba(220, 204, 255, .52);
+  background:
+    linear-gradient(90deg, rgba(116, 83, 190, .42), rgba(45, 40, 96, .86) 52%, rgba(30, 67, 102, .78));
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .13),
+    0 7px 22px rgba(38, 22, 91, .24),
+    0 0 18px rgba(145, 232, 255, .10);
+}
+
+.drive-folder-row:not(:disabled):active,
+.gallery-folder-row:not(:disabled):active {
+  transform: scale(.995);
+}
+
+.drive-folder-chevron,
+.gallery-folder-chevron {
+  color: var(--anime-button-cyan);
+  text-shadow: 0 0 10px rgba(145, 232, 255, .48);
+}
+
+.drive-folder-icon,
+.gallery-folder-icon {
+  color: #ffd4ec;
+  filter: drop-shadow(0 0 7px rgba(243, 154, 200, .28));
+}
+
+.video-playlist-item {
+  border: 1px solid rgba(185, 169, 255, .16);
+  background:
+    linear-gradient(110deg, rgba(54, 48, 107, .60), rgba(24, 29, 65, .80));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.video-playlist-item:not(:disabled):hover {
+  border-color: rgba(220, 204, 255, .46);
+  background:
+    linear-gradient(110deg, rgba(100, 76, 169, .76), rgba(37, 48, 91, .92));
+  transform: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .11),
+    0 7px 20px rgba(21, 12, 63, .24);
+}
+
+.video-playlist-item.active,
+.video-playlist-item[aria-current="true"] {
+  border-color: rgba(255, 207, 233, .64);
+  background:
+    linear-gradient(110deg, rgba(117, 75, 168, .92), rgba(51, 56, 120, .96) 58%, rgba(38, 93, 122, .92));
+  outline: 1px solid rgba(145, 232, 255, .34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .18),
+    0 8px 24px rgba(44, 22, 91, .32),
+    0 0 20px rgba(145, 232, 255, .13);
+}
+
+.video-playlist-item.active .video-thumb-wrap,
+.video-playlist-item[aria-current="true"] .video-thumb-wrap {
+  border: 1px solid rgba(255, 213, 237, .46);
+  box-shadow: 0 0 14px rgba(243, 154, 200, .20);
+}
+
+#viewer .icon-btn,
+#viewer .nav-btn {
+  border-color: rgba(220, 204, 255, .36);
+  background:
+    radial-gradient(circle at 28% 10%, rgba(194, 174, 255, .24), transparent 42%),
+    linear-gradient(145deg, rgba(66, 54, 133, .88), rgba(18, 26, 61, .92));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .16),
+    0 10px 28px rgba(4, 3, 19, .36),
+    0 0 18px rgba(137, 119, 255, .14);
+}
+
+#viewer .icon-btn:not(:disabled):hover,
+#viewer .nav-btn:not(:disabled):hover {
+  border-color: rgba(255, 222, 242, .78);
+  background:
+    radial-gradient(circle at 80% 16%, rgba(255, 255, 255, .38) 0 1px, transparent 2px),
+    linear-gradient(145deg, rgba(117, 76, 174, .96), rgba(37, 48, 97, .96));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .24),
+    0 12px 32px rgba(4, 3, 19, .44),
+    0 0 24px rgba(243, 154, 200, .22);
+}
+
+#viewer .icon-btn:not(:disabled):hover {
+  transform: translateY(-2px) scale(1.03);
+}
+
+#viewer .icon-btn:not(:disabled):active {
+  transform: scale(.96);
+}
+
+#viewer .nav-btn:not(:disabled):hover {
+  transform: translateY(calc(-50% - 2px)) scale(1.03);
+}
+
+#viewer .nav-btn:not(:disabled):active {
+  transform: translateY(-50%) scale(.96);
+}
+
+.slideshow-toggle[aria-pressed="true"] {
+  border-color: rgba(255, 211, 235, .72);
+  background:
+    linear-gradient(135deg, rgba(239, 137, 190, .92), rgba(112, 82, 181, .96));
+  color: #fff7fd;
+}
+
+.slideshow-toggle[aria-pressed="false"] {
+  border-color: rgba(145, 232, 255, .62);
+  background:
+    linear-gradient(135deg, rgba(47, 147, 176, .92), rgba(58, 62, 143, .96));
+  color: #edfbff;
+}
+
+#playerWrap:fullscreen #videoListBtn,
+#playerWrap:fullscreen #fullscreenFab,
+#playerWrap:fullscreen #gpuListBtn,
+#playerWrap:fullscreen #gpuFullscreenBtn,
+#playerWrap:-webkit-full-screen #videoListBtn,
+#playerWrap:-webkit-full-screen #fullscreenFab,
+#playerWrap:-webkit-full-screen #gpuListBtn,
+#playerWrap:-webkit-full-screen #gpuFullscreenBtn {
+  border-color: rgba(220, 204, 255, .52);
+  background:
+    linear-gradient(135deg, rgba(83, 62, 151, .94), rgba(22, 31, 70, .96));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .18),
+    0 8px 24px rgba(4, 3, 19, .42),
+    0 0 18px rgba(145, 232, 255, .16);
+}
+
+@keyframes anime-button-twinkle {
+  0%, 100% { opacity: .45; transform: scale(.88) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1.18) rotate(12deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  button::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
