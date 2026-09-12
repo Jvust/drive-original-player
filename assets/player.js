@@ -1978,7 +1978,12 @@ async function initServiceWorker() {
     return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name || "");
   }
 
-  function driveListFields(mediaMetadataField) {
+  /*
+   * 目录扫描阶段同时读取两类媒体的元数据。
+   * 展示层仍由 flattenVideosFromTree 只挑视频，
+   * 所以图片会被读到，但不会混进视频播放列表。
+   */
+  function driveListFields() {
     return [
       "id",
       "name",
@@ -1989,13 +1994,14 @@ async function initServiceWorker() {
       "parents",
       "driveId",
       "capabilities",
-      mediaMetadataField
+      "videoMediaMetadata",
+      "imageMediaMetadata"
     ].join(",");
   }
 
   async function fetchDriveMetadata(fileId, accessToken, resourceKey = null) {
     const fields =
-      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata";
+      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata";
 
     const url =
       "https://www.googleapis.com/drive/v3/files/" +
@@ -2095,7 +2101,7 @@ async function initServiceWorker() {
         includeItemsFromAllDrives: "true",
         fields:
           "nextPageToken,files(" +
-          driveListFields("videoMediaMetadata") +
+          driveListFields() +
           ")"
       });
 
@@ -2133,7 +2139,11 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
-        if (isDriveFolder(file) || isVideoFile(file)) {
+        if (
+          isDriveFolder(file) ||
+          isVideoFile(file) ||
+          isImageFile(file)
+        ) {
           allItems.push(file);
         }
       }
@@ -2659,7 +2669,7 @@ async function initServiceWorker() {
       !finished
     ) {
       setStatus(
-        "Original · 播放中 · 后台读取 " +
+        "Original · 播放中 · 同时读取视频与图片 · 后台读取 " +
         (
           videoRootFolder
             ? videoRootFolder.name
@@ -2684,12 +2694,12 @@ async function initServiceWorker() {
                 ? (
                     "Original · WebGPU 高质量渲染 · " +
                     scannedFolders +
-                    " 个文件夹已读取"
+                    " 个文件夹已读取（视频与图片）"
                   )
                 : (
                     "Original · 平衡模式 · " +
                     scannedFolders +
-                    " 个文件夹已读取"
+                    " 个文件夹已读取（视频与图片）"
                   )
             )
       );
@@ -2775,7 +2785,7 @@ async function initServiceWorker() {
        * 后台目录读取失败绝不能打断已经在播放的视频。
        */
       console.warn(
-        "后台读取递归视频文件树失败，继续当前视频：",
+        "后台读取递归媒体文件树失败，继续当前视频：",
         error
       );
 
@@ -5899,7 +5909,7 @@ function authorizeDrive() {
         encodeURIComponent(currentFileId) +
         "?supportsAllDrives=true&fields=" +
         encodeURIComponent(
-          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata"
+          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata"
         );
 
       const headers = { "Authorization": "Bearer " + accessToken };
