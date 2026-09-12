@@ -1978,12 +1978,7 @@ async function initServiceWorker() {
     return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name || "");
   }
 
-  /*
-   * 目录扫描阶段同时读取两类媒体的元数据。
-   * 展示层仍由 flattenVideosFromTree 只挑视频，
-   * 所以图片会被读到，但不会混进视频播放列表。
-   */
-  function driveListFields() {
+  function driveListFields(mediaMetadataField) {
     return [
       "id",
       "name",
@@ -1994,14 +1989,13 @@ async function initServiceWorker() {
       "parents",
       "driveId",
       "capabilities",
-      "videoMediaMetadata",
-      "imageMediaMetadata"
+      mediaMetadataField
     ].join(",");
   }
 
   async function fetchDriveMetadata(fileId, accessToken, resourceKey = null) {
     const fields =
-      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata";
+      "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata";
 
     const url =
       "https://www.googleapis.com/drive/v3/files/" +
@@ -2101,7 +2095,7 @@ async function initServiceWorker() {
         includeItemsFromAllDrives: "true",
         fields:
           "nextPageToken,files(" +
-          driveListFields() +
+          driveListFields("videoMediaMetadata") +
           ")"
       });
 
@@ -2139,11 +2133,7 @@ async function initServiceWorker() {
       const data = await response.json();
 
       for (const file of data.files || []) {
-        if (
-          isDriveFolder(file) ||
-          isVideoFile(file) ||
-          isImageFile(file)
-        ) {
+        if (isDriveFolder(file) || isVideoFile(file)) {
           allItems.push(file);
         }
       }
@@ -2669,7 +2659,7 @@ async function initServiceWorker() {
       !finished
     ) {
       setStatus(
-        "Original · 播放中 · 同时读取视频与图片 · 后台读取 " +
+        "Original · 播放中 · 后台读取 " +
         (
           videoRootFolder
             ? videoRootFolder.name
@@ -2694,12 +2684,12 @@ async function initServiceWorker() {
                 ? (
                     "Original · WebGPU 高质量渲染 · " +
                     scannedFolders +
-                    " 个文件夹已读取（视频与图片）"
+                    " 个文件夹已读取"
                   )
                 : (
                     "Original · 平衡模式 · " +
                     scannedFolders +
-                    " 个文件夹已读取（视频与图片）"
+                    " 个文件夹已读取"
                   )
             )
       );
@@ -5909,7 +5899,7 @@ function authorizeDrive() {
         encodeURIComponent(currentFileId) +
         "?supportsAllDrives=true&fields=" +
         encodeURIComponent(
-          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata,imageMediaMetadata"
+          "id,name,mimeType,size,thumbnailLink,resourceKey,parents,driveId,capabilities,videoMediaMetadata"
         );
 
       const headers = { "Authorization": "Bearer " + accessToken };
@@ -6075,5 +6065,18 @@ document.addEventListener(
 window.addEventListener(
   "focus",
   refreshWorkerAccessToken
+);
+
+/*
+ * 从浏览器后退/前进缓存恢复时，重新建立页面和 Drive 目录读取流程。
+ * 这样在视频页与图片页之间来回切换，不会复用旧页面的扫描结果。
+ */
+window.addEventListener(
+  "pageshow",
+  event => {
+    if (event.persisted) {
+      window.location.reload();
+    }
+  }
 );
 

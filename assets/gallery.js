@@ -124,7 +124,7 @@ async function refreshWorkerAccessToken() {
 function fileResourceKey(fileId) { return resourceKeys && resourceKeys[fileId] ? resourceKeys[fileId] : null; }
 
 async function fetchFileMetadata(fileId) {
-  const fields = ["id","name","mimeType","size","thumbnailLink","capabilities","imageMediaMetadata","videoMediaMetadata","parents","driveId","resourceKey"].join(",");
+  const fields = ["id","name","mimeType","size","thumbnailLink","capabilities","imageMediaMetadata","parents","driveId","resourceKey"].join(",");
   const url = "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?supportsAllDrives=true&fields=" + encodeURIComponent(fields);
   const headers = { "Authorization": "Bearer " + currentAccessToken };
   const key = fileResourceKey(fileId);
@@ -163,19 +163,6 @@ function isImageFile(file) {
     .test(file.name || "");
 }
 
-function isVideoFile(file) {
-  if (!file) return false;
-  if (
-    file.mimeType &&
-    file.mimeType.startsWith("video/")
-  ) {
-    return true;
-  }
-
-  return /\.(mp4|m4v|mov|webm|mkv)$/i
-    .test(file.name || "");
-}
-
 async function fetchGalleryDriveMetadata(fileId) {
   const fields = [
     "id",
@@ -185,7 +172,6 @@ async function fetchGalleryDriveMetadata(fileId) {
     "thumbnailLink",
     "capabilities",
     "imageMediaMetadata",
-    "videoMediaMetadata",
     "parents",
     "driveId",
     "resourceKey"
@@ -302,7 +288,6 @@ async function listGalleryTreeChildren(folderFile) {
             "thumbnailLink",
             "capabilities",
             "imageMediaMetadata",
-            "videoMediaMetadata",
             "resourceKey",
             "parents",
             "driveId"
@@ -366,8 +351,7 @@ async function listGalleryTreeChildren(folderFile) {
 
       if (
         isDriveFolder(file) ||
-        isImageFile(file) ||
-        isVideoFile(file)
+        isImageFile(file)
       ) {
         allItems.push(file);
       }
@@ -441,7 +425,7 @@ async function buildGalleryFolderTree(rootFolder) {
         scannedFolders += 1;
 
         setStatus(
-          "正在同时读取视频与图片 · " +
+          "正在读取 " +
           (rootFolder.name ||
             GALLERY_ROOT_FOLDER_NAME) +
           " · " +
@@ -3125,7 +3109,7 @@ window.addEventListener("load", async () => {
 
       if (galleryRootFolder) {
         setStatus(
-          "正在同时读取视频与图片 · " +
+          "正在读取 " +
           (galleryRootFolder.name ||
             GALLERY_ROOT_FOLDER_NAME) +
           " 文件树"
@@ -3232,4 +3216,14 @@ window.addEventListener("load", async () => {
 setInterval(refreshWorkerAccessToken, 30 * 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshWorkerAccessToken(); });
 window.addEventListener("focus", refreshWorkerAccessToken);
+
+/*
+ * 从浏览器后退/前进缓存恢复时，重新建立页面和 Drive 目录读取流程。
+ * 这样在视频页与图片页之间来回切换，不会复用旧页面的扫描结果。
+ */
+window.addEventListener("pageshow", event => {
+  if (event.persisted) {
+    window.location.reload();
+  }
+});
 
