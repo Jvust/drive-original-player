@@ -21,6 +21,7 @@ let gallerySlideshowActive = false;
 let gallerySlideshowQueue = [];
 let galleryFolderSlideshowTimer = null;
 let galleryFolderSlideshowPaused = false;
+let gallerySlideshowPaused = false;
 let gallerySlideshowOrientation = null;
 let lastGalleryViewportOrientation = null;
 const GALLERY_SLIDESHOW_INTERVAL_MS = 20000;
@@ -2077,7 +2078,9 @@ async function showViewerImage(
   const caption = document.getElementById("slideshowCaption");
   if (caption) {
     caption.textContent = slideshowMode
-      ? "✦ 随机画廊 · 20 秒换图"
+      ? gallerySlideshowPaused
+        ? "✦ 随机画廊 · 已暂停"
+        : "✦ 随机画廊 · 20 秒换图"
       : galleryFolderSlideshowPaused
         ? "普通浏览 · 轮播已暂停"
         : "普通浏览 · 每 10 秒自动下一张";
@@ -2171,15 +2174,21 @@ function updateImageSlideshowUi() {
   if (!button) return;
 
   const randomMode = gallerySlideshowActive;
-  button.disabled = randomMode;
+  button.disabled = false;
   button.textContent = randomMode
-    ? "随机画廊中"
+    ? gallerySlideshowPaused
+      ? "继续画廊"
+      : "暂停画廊"
     : galleryFolderSlideshowPaused
       ? "继续轮播"
       : "暂停轮播";
   button.setAttribute(
     "aria-pressed",
-    String(!galleryFolderSlideshowPaused && !randomMode)
+    String(
+      randomMode
+        ? !gallerySlideshowPaused
+        : !galleryFolderSlideshowPaused
+    )
   );
 }
 
@@ -2212,7 +2221,29 @@ function scheduleGalleryFolderSlideshow() {
 
 function toggleImageSlideshow() {
   if (gallerySlideshowActive) {
-    setStatus("随机画廊正在运行，请先退出随机画廊。 ");
+    gallerySlideshowPaused = !gallerySlideshowPaused;
+
+    const orientationLabel =
+      getGalleryViewportOrientation() === "portrait"
+        ? "竖屏图片"
+        : "横屏图片";
+
+    setStatus(
+      gallerySlideshowPaused
+        ? "随机画廊 · 已暂停"
+        : "画廊模式 · " +
+          orientationLabel +
+          " · 每 20 秒随机切换 · 已预加载后面 3 张"
+    );
+
+    const caption = document.getElementById("slideshowCaption");
+    if (caption) {
+      caption.textContent = gallerySlideshowPaused
+        ? "✦ 随机画廊 · 已暂停"
+        : "✦ 随机画廊 · 20 秒换图";
+    }
+
+    updateImageSlideshowUi();
     return;
   }
 
@@ -2413,6 +2444,7 @@ function startFullscreenGallery() {
 
   stopFullscreenGallery(false);
   gallerySlideshowActive = true;
+  gallerySlideshowPaused = false;
   galleryFolderSlideshowPaused = false;
   updateImageSlideshowUi();
 
@@ -2439,6 +2471,8 @@ function startFullscreenGallery() {
           stopFullscreenGallery(false);
           return;
         }
+
+        if (gallerySlideshowPaused) return;
 
         if (galleryFiles.length < 2) {
           return;
@@ -2485,6 +2519,7 @@ function stopFullscreenGallery(
 
   gallerySlideshowTimer = null;
   gallerySlideshowActive = false;
+  gallerySlideshowPaused = false;
   gallerySlideshowQueue = [];
   gallerySlideshowOrientation = null;
   updateImageSlideshowUi();
