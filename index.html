@@ -7,12 +7,13 @@
   <meta name="description" content="属于你的星空放映室，原画播放 Google Drive 视频与图片。" />
 
   <link rel="stylesheet" href="./assets/player.css?v=starroom-1" />
-  <link rel="stylesheet" href="./assets/theme.css?v=starroom-3" />
+  <link rel="stylesheet" href="./assets/theme.css?v=starlight-5" />
   <link rel="icon" href="./assets/star.svg" type="image/svg+xml" />
-  <meta name="theme-color" content="#111426" />
+  <meta name="theme-color" content="#0b0f1d" />
 </head>
 
 <body class="player-page">
+<a class="skip-link" href="#mainContent">跳到主要内容</a>
 <!-- 仅用于浏览器显示端的实时锐化，不修改/转码 Google Drive 原视频。 -->
 <svg width="0" height="0" aria-hidden="true" focusable="false"
      style="position:absolute;left:-9999px;top:-9999px;overflow:hidden">
@@ -34,23 +35,35 @@
 
 <header class="site-header">
   <a class="site-brand" href="./"><span class="brand-star" aria-hidden="true">✦</span><span>星映<small>HOSHI / ORIGINAL</small></span></a>
-  <nav class="site-nav" aria-label="主导航"><a href="./" aria-current="page">放映室</a><a href="./gallery/">图片收藏</a></nav>
+  <nav class="site-nav" aria-label="主导航"><a href="./" aria-current="page"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg><span>放映室</span></a><a href="./gallery/"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><span>图片收藏</span></a></nav>
   <div id="status" role="status" aria-live="polite">等待授权</div>
 </header>
 
-<main>
+<main id="mainContent">
 
   <section id="welcome" class="welcome-shell">
     <div class="welcome-hero">
-      <span class="eyebrow">YOUR LITTLE CORNER OF THE UNIVERSE</span>
-      <h1>把喜欢的世界，<br>放映成<span>星光。</span></h1>
-      <p>在自己的小小宇宙里，重温每一个心动瞬间。<br>连接 Google Drive，让原画与回忆如实呈现。</p>
-      <div class="hero-actions"><button id="loginBtn" class="primary" onclick="authorizeDrive()">连接 Google Drive <span aria-hidden="true">↗</span></button><a class="quiet-link" href="./gallery/">去图片收藏 →</a></div>
-      <span class="hero-note">ORIGINAL QUALITY · YOUR PERSONAL CINEMA</span>
-      <span class="art-caption" aria-hidden="true">夜空には、まだ物語がある。<br><small>There are still stories in the night sky.</small></span>
+      <div class="hero-sparkles" aria-hidden="true"><i>✦</i><i>✧</i><i>✦</i></div>
+      <div class="hero-content">
+        <span class="hero-kicker"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg> A LITTLE SPACE, JUST FOR YOU</span>
+        <h1>让喜欢的世界，<br><span>在此刻发光。</span></h1>
+        <p>把日常调成静音，把心动放大。<br>连接 Google Drive，走进只属于你的放映室。</p>
+        <div class="hero-actions">
+          <button id="loginBtn" class="primary" data-icon="cloud" onclick="authorizeDrive()">连接 Google Drive</button>
+          <a class="quiet-link" href="./gallery/">探索图片收藏 <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
+        </div>
+        <div class="hero-note"><span class="note-dot"></span> ORIGINAL QUALITY <span class="note-divider">/</span> MADE FOR YOUR LITTLE UNIVERSE</div>
+      </div>
+      <div class="art-caption" aria-hidden="true"><span class="caption-star">✧</span><div>今夜は、好きな世界へ。<small>Somewhere between dreams and starlight.</small></div></div>
+      <div class="hero-edition" aria-hidden="true">01 / AFTER THE STARS</div>
     </div>
-    <div class="feature-strip"><div><b>01 / 原画放映</b><p>直接播放云端原文件，留住画面的每一处细节。</p></div><div><b>02 / 沉浸时刻</b><p>一键全屏，把此刻交给喜欢的故事。</p></div><div><b>03 / 星光收藏</b><p>横竖自适应画廊，和每 10 秒翻页的相册。</p></div></div>
-    <details class="connect-guide"><summary>如何开始我的放映？</summary><p>首次连接后，在 Google Drive 右键视频或图片，选择「打开方式 → Drive Original Player」。图片会自动进入收藏页。</p></details>
+    <div class="section-caption"><span>THE ART OF SLOWING DOWN</span><span>为喜欢，留一点时间 <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg></span></div>
+    <div class="feature-strip">
+      <div><span class="feature-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 11 7-11 7Z"/></svg></span><div class="feature-copy"><b>原画放映</b><p>保留云端原文件的每一处细节。</p></div><span class="feature-number" aria-hidden="true">01</span></div>
+      <div><span class="feature-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></span><div class="feature-copy"><b>沉浸时刻</b><p>一键全屏，让喜欢的故事占满视野。</p></div><span class="feature-number" aria-hidden="true">02</span></div>
+      <div><span class="feature-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span><div class="feature-copy"><b>心动收藏</b><p>去相册里，遇见让你停留的画面。</p></div><span class="feature-number" aria-hidden="true">03</span></div>
+    </div>
+    <details class="connect-guide"><summary>从这里，开启你的放映 <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></summary><p>首次连接后，在 Google Drive 右键视频，选择「打开方式 → Drive Original Player」，即可播放原文件。</p></details>
   </section>
   <div id="error" role="alert"></div>
 
@@ -71,8 +84,8 @@
     </div>
 
     <div id="videoQuickControls" aria-label="视频快捷控制">
-      <button id="videoListBtn" onclick="toggleVideoPlaylist()" title="1433223 文件树">列表</button>
-      <button id="fullscreenFab" onclick="toggleWebFullscreen()" title="网页全屏">全屏</button>
+      <button id="videoListBtn" data-icon="list" onclick="toggleVideoPlaylist()" title="1433223 文件树">列表</button>
+      <button id="fullscreenFab" data-icon="expand" onclick="toggleWebFullscreen()" title="网页全屏">全屏</button>
     </div>
 
     <div id="playlistBackdrop" onclick="closeVideoPlaylist()"></div>
@@ -94,18 +107,18 @@
       <span id="gpuTime">00:00 / 00:00</span>
       <button id="gpuMuteBtn" onclick="gpuToggleMute()">静音</button>
       <input id="gpuVolume" type="range" min="0" max="1" value="1" step="0.05" aria-label="音量" />
-      <button id="gpuListBtn" onclick="toggleVideoPlaylist()" title="打开 1433223 文件树">列表</button>
-      <button id="gpuFullscreenBtn" onclick="toggleWebFullscreen()" title="网页全屏；全屏右上角保留列表入口">全屏</button>
+      <button id="gpuListBtn" data-icon="list" onclick="toggleVideoPlaylist()" title="打开 1433223 文件树">列表</button>
+      <button id="gpuFullscreenBtn" data-icon="expand" onclick="toggleWebFullscreen()" title="网页全屏；全屏右上角保留列表入口">全屏</button>
     </div>
 
     <div class="player-tools">
-      <button id="rotateBtn" onclick="toggleRotate()">
+      <button id="rotateBtn" data-icon="rotate" onclick="toggleRotate()">
         旋转 90°
       </button>
-      <button id="webFullscreenBtn" onclick="toggleWebFullscreen()" title="全屏后控件会自动隐藏；移动鼠标或触摸屏幕可再次显示">
+      <button id="webFullscreenBtn" data-icon="expand" onclick="toggleWebFullscreen()" title="全屏后控件会自动隐藏；移动鼠标或触摸屏幕可再次显示">
         全屏
       </button>
-      <button id="downloadBtn" onclick="downloadCurrentVideo()" title="下载当前原文件" disabled>
+      <button id="downloadBtn" data-icon="download" onclick="downloadCurrentVideo()" title="下载当前原文件" disabled>
         下载
       </button>
       <label class="quality-mode-control" title="手动画质模式；默认平衡，不会自动切换到流畅">
@@ -116,10 +129,10 @@
           <option value="0">流畅</option>
         </select>
       </label>
-      <button id="diagnosticBtn" onclick="toggleDiagnostic()">
+      <button id="diagnosticBtn" data-icon="chart" onclick="toggleDiagnostic()">
         画质诊断
       </button>
-      <button id="copyDiagnosticBtn" onclick="copyDiagnostic()" style="display:none">
+      <button id="copyDiagnosticBtn" data-icon="copy" onclick="copyDiagnostic()" style="display:none">
         复制诊断
       </button>
     </div>
@@ -134,7 +147,7 @@
   </div>
 
 </main>
-<footer class="site-footer"><span>✦ 星映 · 让喜欢，自成宇宙。</span><span>DRIVE ORIGINAL PLAYER</span></footer>
+<footer class="site-footer"><a href="./" class="footer-brand"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg> 星映 <span>HOSHI</span></a><span>让喜欢，自成宇宙。</span><span class="footer-signature">YOUR OWN CORNER OF THE UNIVERSE</span></footer>
 
 <script src="./assets/media-index.js?v=starroom-1"></script>
 <script src="./assets/player.js?v=starroom-5"></script>
@@ -142,4 +155,3 @@
 
 </body>
 </html>
-
