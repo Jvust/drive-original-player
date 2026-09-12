@@ -105,6 +105,9 @@
       <button id="webFullscreenBtn" onclick="toggleWebFullscreen()" title="全屏后控件会自动隐藏；移动鼠标或触摸屏幕可再次显示">
         全屏
       </button>
+      <button id="downloadBtn" onclick="downloadCurrentVideo()" title="下载当前原文件" disabled>
+        下载
+      </button>
       <label class="quality-mode-control" title="手动画质模式；默认平衡，不会自动切换到流畅">
         <span>画质</span>
         <select id="qualityModeSelect" onchange="setQualityModeFromUi(this.value)">
@@ -133,7 +136,7 @@
 </main>
 <footer class="site-footer"><span>✦ 星映 · 让喜欢，自成宇宙。</span><span>DRIVE ORIGINAL PLAYER</span></footer>
 
-<script src="./assets/player.js?v=starroom-1"></script>
+<script src="./assets/player.js?v=starroom-2"></script>
 
 
 </body>

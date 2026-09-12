@@ -74,8 +74,8 @@
   const smoothDeviceMode = detectSmoothDevice();
   let serviceWorkerReady = false;
   let pausedBufferTimer = null;
-  let pausedBufferFailedFileId = null;
   const PAUSED_BUFFER_START_DELAY_MS = 500;
+  const PAUSED_BUFFER_RETRY_MS = 1800;
   const OAUTH_BRIDGE =
   "https://drive-oauth-bridge.143322378jb.workers.dev";
 
@@ -1761,7 +1761,8 @@ async function initServiceWorker() {
 
   try {
     await navigator.serviceWorker.register("./sw.js", {
-      scope: "./"
+      scope: "./",
+      updateViaCache: "none"
     });
 
     await navigator.serviceWorker.ready;
@@ -1789,6 +1790,15 @@ async function initServiceWorker() {
       clearTimeout(pausedBufferTimer);
       pausedBufferTimer = null;
     }
+  }
+
+  function schedulePausedBuffering(player, delay = PAUSED_BUFFER_RETRY_MS) {
+    cancelPausedBufferingSchedule();
+
+    pausedBufferTimer = setTimeout(() => {
+      pausedBufferTimer = null;
+      keepBufferingWhilePaused(player);
+    }, delay);
   }
 
   function isMp4VideoFile(file) {
@@ -1849,7 +1859,7 @@ async function initServiceWorker() {
 
     cancelPausedBufferingSchedule();
 
-    pausedBufferTimer = setTimeout(() => {
+    pausedBufferTimer = setTimeout(async () => {
       pausedBufferTimer = null;
 
       const activePlayer = document.getElementById("player");
@@ -1860,19 +1870,32 @@ async function initServiceWorker() {
         activePlayer !== player ||
         !activePlayer.paused ||
         !activePlayer.currentSrc ||
-        !isMp4VideoFile(file) ||
-        pausedBufferFailedFileId === file.id ||
-        seekRescueActivation ||
-        (seekRescueSession && seekRescueSession.active)
+        !isMp4VideoFile(file)
       ) {
+        return;
+      }
+
+      if (isPlayerBufferedToEnd(activePlayer)) return;
+
+      if (seekRescueSession && seekRescueSession.active) {
+        seekRescueSession.startRefillLoop();
+        await seekRescueSession.refillIfNeeded();
+        if (activePlayer.paused) {
+          schedulePausedBuffering(activePlayer);
+        }
+        return;
+      }
+
+      if (seekRescueActivation) {
+        schedulePausedBuffering(activePlayer);
         return;
       }
 
       if (
         activePlayer.readyState < 1 ||
-        !Number.isFinite(activePlayer.duration) ||
-        isPlayerBufferedToEnd(activePlayer)
+        !Number.isFinite(activePlayer.duration)
       ) {
+        schedulePausedBuffering(activePlayer);
         return;
       }
 
@@ -1881,12 +1904,24 @@ async function initServiceWorker() {
        * 浏览器对 paused + preload=auto 的处理不一致，
        * MP4 暂停后直接交给 MSE 持续追加到文件末尾。
        */
-      activateSeekRescue(
-        activePlayer.currentTime,
-        "paused background buffering"
-      ).catch(error => {
+      try {
+        await activateSeekRescue(
+          activePlayer.currentTime,
+          "paused background buffering"
+        );
+      } catch (error) {
         console.warn("暂停后台缓冲启动失败：", error);
-      });
+        schedulePausedBuffering(activePlayer);
+        return;
+      }
+
+      if (
+        activePlayer.paused &&
+        !(seekRescueSession && seekRescueSession.active) &&
+        activePlayer.currentSrc
+      ) {
+        schedulePausedBuffering(activePlayer);
+      }
     }, PAUSED_BUFFER_START_DELAY_MS);
   }
 
@@ -3106,6 +3141,44 @@ async function initServiceWorker() {
     return url;
   }
 
+  async function downloadCurrentVideo() {
+    const file = videoPlaylist[currentVideoIndex];
+
+    if (!file || !file.id) {
+      setStatus("当前没有可下载的视频。");
+      return;
+    }
+
+    if (file.capabilities && file.capabilities.canDownload === false) {
+      setStatus("这个 Google Drive 文件禁止下载。");
+      return;
+    }
+
+    try {
+      await sendCurrentVideoStateToWorker(file);
+
+      const url = new URL(
+        getVideoMediaUrl(file),
+        window.location.href
+      );
+      url.searchParams.set("download", "1");
+      url.searchParams.set("filename", file.name || "video.mp4");
+
+      const anchor = document.createElement("a");
+      anchor.href = url.href;
+      anchor.download = file.name || "video.mp4";
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      setStatus("已开始下载 · " + (file.name || "视频文件"));
+    } catch (error) {
+      console.error("视频下载启动失败：", error);
+      setStatus("下载启动失败 · 请重新连接 Google Drive 后再试");
+    }
+  }
+
   function renderVideoPlaylist() {
     const items =
       document.getElementById("videoPlaylistItems");
@@ -3555,6 +3628,18 @@ async function initServiceWorker() {
 
     if (videoPlaylistDomReady) {
       syncVideoPlaylistDomState();
+    }
+
+    const downloadButton = document.getElementById("downloadBtn");
+    if (downloadButton) {
+      const canDownload = !(
+        file.capabilities &&
+        file.capabilities.canDownload === false
+      );
+      downloadButton.disabled = !canDownload;
+      downloadButton.title = canDownload
+        ? "下载当前原文件"
+        : "此文件禁止下载";
     }
 
     if (file.capabilities && file.capabilities.canDownload === false) {
@@ -5087,13 +5172,27 @@ async function initServiceWorker() {
     startRefillLoop() {
       if (this.refillTimer) return;
 
-      this.refillTimer =
-        setInterval(
-          () => {
-            this.refillIfNeeded();
-          },
-          1000
-        );
+      const tick = async () => {
+        if (this.destroyed || !this.active) {
+          this.refillTimer = null;
+          return;
+        }
+
+        try {
+          await this.refillIfNeeded();
+        } finally {
+          if (!this.destroyed && this.active) {
+            this.refillTimer = setTimeout(
+              tick,
+              this.player.paused ? 350 : 700
+            );
+          } else {
+            this.refillTimer = null;
+          }
+        }
+      };
+
+      this.refillTimer = setTimeout(tick, 0);
     }
 
     async activate(
@@ -5114,7 +5213,7 @@ async function initServiceWorker() {
       this.generation++;
 
       if (this.refillTimer) {
-        clearInterval(
+        clearTimeout(
           this.refillTimer
         );
 
@@ -5384,10 +5483,6 @@ async function initServiceWorker() {
               ? "暂停后台缓冲失败 · 保持原生播放"
               : "Seek Rescue V2 失败 · 回退原生播放"
           );
-
-          if (pausedBuffering) {
-            pausedBufferFailedFileId = file.id;
-          }
 
           await restoreNativeAfterRescueFailure(
             file,

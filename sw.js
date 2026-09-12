@@ -8,7 +8,7 @@
  * 4. HEAD 返回完整文件长度，而不是错误地返回 1 byte。
  * 5. 把浏览器的 abort signal 传给 Google Drive，拖动后旧请求能尽快停止。
  * 6. SET_TOKEN 先写内存并立即 ACK，Cache Storage 后台持久化。
- * 7. 不主动发起媒体预取；页面的 preload=auto 可让浏览器在暂停时继续请求媒体字节。
+ * 7. 原生视频由页面 preload=auto 提供首选路径；异常 MP4 由页面的 MSE Rescue 负责暂停态续缓冲。
  */
 
 const MEDIA_PREFIX = "/drive-original-player/media/";
@@ -305,7 +305,11 @@ function make416(fileSize) {
   });
 }
 
-function cleanMediaHeaders(headers, fallbackType = "video/mp4") {
+function cleanMediaHeaders(
+  headers,
+  fallbackType = "video/mp4",
+  downloadName = ""
+) {
   const out = new Headers(headers);
 
   out.delete("Content-Disposition");
@@ -314,6 +318,19 @@ function cleanMediaHeaders(headers, fallbackType = "video/mp4") {
 
   if (!out.get("Content-Type")) {
     out.set("Content-Type", fallbackType);
+  }
+
+  if (downloadName) {
+    const safeName =
+      String(downloadName)
+        .replace(/[\\/\r\n\"']/g, "_")
+        .trim()
+        .slice(0, 180) || "video.mp4";
+
+    out.set(
+      "Content-Disposition",
+      "attachment; filename*=UTF-8''" + encodeURIComponent(safeName)
+    );
   }
 
   return out;
@@ -346,6 +363,11 @@ async function streamDriveFile(request, url) {
     "https://www.googleapis.com/drive/v3/files/" +
     encodeURIComponent(fileId) +
     "?alt=media";
+
+  const downloadName =
+    url.searchParams.get("download") === "1"
+      ? url.searchParams.get("filename") || "video.mp4"
+      : "";
 
   const headers = new Headers();
   headers.set(
@@ -386,7 +408,7 @@ async function streamDriveFile(request, url) {
       );
 
       const responseHeaders =
-        cleanMediaHeaders(upstream.headers);
+        cleanMediaHeaders(upstream.headers, "video/mp4", downloadName);
 
       responseHeaders.delete("Content-Range");
       responseHeaders.set(
@@ -460,7 +482,9 @@ async function streamDriveFile(request, url) {
 
     const responseHeaders =
       cleanMediaHeaders(
-        upstream.headers
+        upstream.headers,
+        "video/mp4",
+        downloadName
       );
 
     /*
@@ -560,3 +584,4 @@ async function streamDriveFile(request, url) {
     );
   }
 }
+
