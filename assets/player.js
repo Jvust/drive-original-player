@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 34378)
-Total output lines: 6276
-
 /*
    * OAuth 由 Cloudflare Worker /auth 统一处理。
    * 当前 Worker 使用 drive.readonly + drive.install。
