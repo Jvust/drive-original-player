@@ -1,118 +1,74 @@
-/*
- * Shared navigation state for the player and gallery.
- *
- * Google Drive opens the site with a `state` query parameter containing the
- * selected file id. Normal links between the two pages used to drop that
- * parameter, so the destination could no longer recover the current media.
- * Keep the latest valid state in this tab and copy it to internal links.
- */
+/* Keep each view's selection; never send an image to the video view by mistake. */
 (() => {
-  const STATE_KEY = "drive_original_last_state";
-  const APP_PREFIX = "/drive-original-player/";
+  "use strict";
+  const base = new URL("../", document.currentScript.src);
+  const page = document.body.classList.contains("gallery-page") ? "gallery" : "player";
+  const key = "drive-original-selections-v2";
+  let selected = null;
 
-  function readStateFromUrl() {
-    const value = new URL(window.location.href).searchParams.get("state");
-    if (!value || !value.trim()) return null;
+  function parse(raw) {
     try {
-      const parsed = JSON.parse(value);
-      if (parsed.action !== "open" || !Array.isArray(parsed.ids) || !parsed.ids.length) {
-        return null;
-      }
-    } catch (_) {
-      return null;
-    }
-    return value;
+      const state = JSON.parse(raw);
+      return state?.action === "open" && Array.isArray(state.ids) &&
+        state.ids.length && state.ids.every(id => typeof id === "string" && id)
+        ? state : null;
+    } catch (_) { return null; }
   }
-
-  function rememberCurrentState() {
-    const state = readStateFromUrl();
-    if (state) {
-      try {
-        sessionStorage.setItem(STATE_KEY, state);
-      } catch (_) {
-        // Storage may be disabled; the current URL still remains usable.
-      }
-    }
-    return state;
+  function readSelections() {
+    try { return JSON.parse(sessionStorage.getItem(key)) || {}; }
+    catch (_) { return {}; }
   }
-
-  function rememberedState() {
-    try {
-      const state = sessionStorage.getItem(STATE_KEY);
-      return state && state.trim() ? state : null;
-    } catch (_) {
-      return null;
-    }
+  function fileState(file) {
+    return { action: "open", ids: [file.id], resourceKeys:
+      file.resourceKey ? { [file.id]: file.resourceKey } : {} };
   }
-
-  function stateForNavigation() {
-    return readStateFromUrl() || rememberedState();
+  function targetState(target) {
+    const index = window.DriveMediaIndex;
+    const source = selected || parse(new URL(location.href).searchParams.get("state"));
+    const snapshot = source ? index?.findSnapshotForFile(source.ids[0]) : index?.loadSnapshot();
+    const saved = parse(JSON.stringify(readSelections()[target]));
+    // A new library must not reuse another library's remembered selection.
+    if (saved && (!source || saved.ids[0] === source.ids[0] ||
+        (snapshot && index.findFile(snapshot.tree, saved.ids[0])))) return saved;
+    const predicate = target === "player" ? window.isVideoFile : window.isImageFile;
+    const file = snapshot && typeof predicate === "function"
+      ? index.findFirstFile(snapshot.tree, predicate) : null;
+    return file ? fileState(file) : source;
   }
-
-  function isInternalAppLink(anchor) {
-    if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) {
-      return false;
-    }
-    const rawHref = anchor.getAttribute("href");
-    if (!rawHref || rawHref.startsWith("#")) return false;
-
-    let url;
-    try {
-      url = new URL(rawHref, window.location.href);
-    } catch (_) {
-      return false;
-    }
-
-    return (
-      url.origin === window.location.origin &&
-      url.pathname.startsWith(APP_PREFIX) &&
-      (url.pathname === APP_PREFIX || url.pathname === APP_PREFIX + "gallery/" ||
-        url.pathname === APP_PREFIX + "gallery")
-    );
-  }
-
-  function decorateLink(anchor) {
-    if (!isInternalAppLink(anchor)) return;
-    const state = stateForNavigation();
-    if (!state) return;
-
-    const url = new URL(anchor.href, window.location.href);
-    url.searchParams.set("state", state);
+  function decorate(anchor) {
+    const raw = anchor.getAttribute("href");
+    if (!raw || raw.startsWith("#") || anchor.hasAttribute("download") ||
+        anchor.hasAttribute("target")) return;
+    const url = new URL(raw, location.href);
+    if (url.origin !== base.origin) return;
+    const target = [base.pathname, base.pathname + "index.html"].includes(url.pathname)
+      ? "player" : [base.pathname + "gallery/", base.pathname + "gallery/index.html"].includes(url.pathname)
+        ? "gallery" : null;
+    if (!target) return;
+    const state = targetState(target);
+    if (state) url.searchParams.set("state", JSON.stringify(state));
+    else url.searchParams.delete("state");
+    // Distinguishes explicit navigation from Drive's image-to-gallery open route.
+    url.searchParams.set("view", target);
     anchor.href = url.href;
   }
-
-  function decorateLinks(root = document) {
-    root.querySelectorAll("a[href]").forEach(decorateLink);
-  }
-
-  function init() {
-    rememberCurrentState();
+  function decorateLinks() { document.querySelectorAll("a[href]").forEach(decorate); }
+  function remember(file) {
+    selected = fileState(file);
+    try {
+      const saved = readSelections();
+      saved[page] = selected;
+      sessionStorage.setItem(key, JSON.stringify(saved));
+    } catch (_) { /* Navigation still works when storage is unavailable. */ }
     decorateLinks();
-
-    // Covers links inserted by future UI updates.
-    new MutationObserver(() => decorateLinks()).observe(document.documentElement, {
-      childList: true,
-      subtree: true
-    });
-
-    // Pages restored from the back-forward cache can have an old DOM state.
-    window.addEventListener("pageshow", event => {
-      rememberCurrentState();
-      decorateLinks();
-      if (event.persisted && typeof window.refreshWorkerAccessToken === "function") {
-        window.refreshWorkerAccessToken();
-      }
-    });
-
-    document.addEventListener("click", event => {
-      const anchor = event.target.closest && event.target.closest("a[href]");
-      if (anchor) decorateLink(anchor);
-    }, true);
   }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init, { once: true });
-  } else {
-    init();
-  }
+  window.DriveNavigation = { remember };
+  document.addEventListener("click", event => {
+    const anchor = event.target.closest?.("a[href]");
+    if (anchor) decorate(anchor);
+  }, true);
+  window.addEventListener("pageshow", event => {
+    decorateLinks();
+    if (event.persisted) window.refreshWorkerAccessToken?.().catch(console.error);
+  });
 })();
