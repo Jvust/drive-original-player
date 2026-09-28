@@ -96,18 +96,12 @@ async function getBridgeAccessToken() {
 function authorizeDrive() { window.location.href = OAUTH_BRIDGE + "/auth"; }
 
 async function initServiceWorker() {
-  if (!("serviceWorker" in navigator)) throw new Error("当前浏览器不支持 Service Worker。");
-  await navigator.serviceWorker.register("./sw.js", { scope: "./" });
-  await navigator.serviceWorker.ready;
+  await window.DriveWorkerClient.ready();
   serviceWorkerReady = true;
-  await new Promise(resolve => setTimeout(resolve, 120));
 }
 
 async function sendTokenToWorker(token) {
-  if (!serviceWorkerReady || !token) return;
-  const registration = await navigator.serviceWorker.ready;
-  const worker = navigator.serviceWorker.controller || registration.active || registration.waiting;
-  if (worker) worker.postMessage({ type: "SET_TOKEN", token });
+  if (token) await window.DriveWorkerClient.send({ type: "SET_TOKEN", token });
 }
 
 async function refreshWorkerAccessToken() {
@@ -2128,6 +2122,7 @@ async function showViewerImage(
 
   currentIndex = (index + galleryFiles.length) % galleryFiles.length;
   const file = galleryFiles[currentIndex];
+  window.DriveNavigation.remember(file);
 
   if (!slideshowMode) {
     clearTimeout(galleryFolderSlideshowTimer);
@@ -3247,17 +3242,12 @@ window.addEventListener("load", async () => {
     await sendTokenToWorker(currentAccessToken);
     setStatus("正在定位 " + GALLERY_ROOT_FOLDER_NAME);
 
-    const openedFile =
+    let openedFile =
       cachedOpenedFile ||
       await fetchFileMetadata(
         driveIds[0]
       );
 
-    if (!isImageFile(openedFile)) {
-      throw new Error(
-        "从 Google Drive 打开的文件不是图片。"
-      );
-    }
 
     try {
       if (
@@ -3337,10 +3327,18 @@ window.addEventListener("load", async () => {
         treeError
       );
 
+      if (!isImageFile(openedFile)) throw treeError;
       galleryTreeRoot = null;
       galleryRootFolder = null;
       galleryFiles = [openedFile];
     }
+
+    // The link can carry a video as a library seed before the first scan
+    // discovers an image. Never render that seed as an image card.
+    galleryFiles = galleryFiles.filter(isImageFile);
+    if (!isImageFile(openedFile)) openedFile = galleryFiles[0];
+    if (!openedFile) { setStatus("当前目录没有图片"); return; }
+    window.DriveNavigation.remember(openedFile);
 
     if (
       !galleryFiles.some(

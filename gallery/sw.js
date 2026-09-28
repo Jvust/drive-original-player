@@ -24,6 +24,7 @@ self.addEventListener("activate", event => event.waitUntil(self.clients.claim())
 self.addEventListener("message", event => {
   if (event.data && event.data.type === "SET_TOKEN") {
     accessToken = event.data.token;
+    event.ports?.[0]?.postMessage({ ok: !!accessToken });
     event.waitUntil(saveAuthState());
   }
 });

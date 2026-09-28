@@ -203,22 +203,9 @@ async function refreshWorkerAccessToken() {
 
     currentAccessToken = accessToken;
 
-    const registration =
-      await navigator.serviceWorker.ready;
-
-    const worker =
-      navigator.serviceWorker.controller ||
-      registration.active;
-
-    if (!worker) {
-      return;
-    }
-
-    worker.postMessage({
-      type: "SET_TOKEN",
-      token: accessToken,
-      fileId: currentFileId,
-      fileSize: currentFileSize
+    await window.DriveWorkerClient.send({
+      type: "SET_TOKEN", token: accessToken,
+      fileId: currentFileId, fileSize: currentFileSize
     });
 
     console.log(
@@ -1752,28 +1739,8 @@ document.addEventListener(
 );
 
 async function initServiceWorker() {
-
-  if (!("serviceWorker" in navigator)) {
-    showError("当前浏览器不支持 Service Worker。");
-    return;
-  }
-
-
-  try {
-    await navigator.serviceWorker.register("./sw.js", {
-      scope: "./",
-      updateViaCache: "none"
-    });
-
-    await navigator.serviceWorker.ready;
-
-    serviceWorkerReady = true;
-
-    console.log("Drive streaming Service Worker ready");
-
-  } catch (error) {
-    console.error("Service Worker 注册失败", error);
-  }
+  await window.DriveWorkerClient.ready();
+  serviceWorkerReady = true;
 }
   function setStatus(text) {
     document.getElementById("status").textContent = text;
@@ -3708,40 +3675,10 @@ async function initServiceWorker() {
   }
 
   async function sendCurrentVideoStateToWorker(file) {
-    if (!serviceWorkerReady) {
-      throw new Error(
-        "视频流服务尚未准备完成，请刷新页面后重试。"
-      );
-    }
-
-    const registration =
-      await navigator
-        .serviceWorker
-        .ready;
-
-    const worker =
-      navigator.serviceWorker.controller ||
-      registration.active;
-
-    if (!worker) {
-      throw new Error(
-        "Service Worker 尚未接管当前页面。请刷新后重试。"
-      );
-    }
-
-    await postWorkerMessage(
-      worker,
-      {
-        type: "SET_TOKEN",
-        token:
-          currentAccessToken,
-        fileId:
-          file.id,
-        fileSize:
-          Number(file.size)
-      },
-      260
-    );
+    await window.DriveWorkerClient.send({
+      type: "SET_TOKEN", token: currentAccessToken,
+      fileId: file.id, fileSize: Number(file.size)
+    });
   }
 
   async function switchVideoByIndex(index, autoplay = true) {
@@ -3765,6 +3702,7 @@ async function initServiceWorker() {
       file.id
     );
 
+    window.DriveNavigation.remember(file);
     updateVideoInfo(file);
 
     if (videoPlaylistDomReady) {
@@ -5922,7 +5860,8 @@ async function initServiceWorker() {
 
  window.addEventListener("load", async () => {
    
-   await initServiceWorker();
+   try { await initServiceWorker(); }
+   catch (error) { setStatus("媒体服务启动失败"); showError(error.message); return; }
 
     const driveState = parseDriveState();
 
@@ -6060,7 +5999,7 @@ function authorizeDrive() {
       const mediaIndex =
         window.DriveMediaIndex;
 
-      const cachedSnapshot =
+      let cachedSnapshot =
         getCachedMediaSnapshot(
           currentFileId
         );
@@ -6106,9 +6045,31 @@ function authorizeDrive() {
       openedFile.resourceKey = openedFile.resourceKey || currentResourceKey || null;
       }
 
-      if (openedFile.mimeType && openedFile.mimeType.startsWith("image/")) {
-        window.location.replace("./gallery/" + window.location.search);
-        return;
+      if (isImageFile(openedFile)) {
+        if (new URLSearchParams(location.search).get("view") !== "player") {
+          window.location.replace("./gallery/" + window.location.search);
+          return;
+        }
+        // An explicit visit to the video view may start from an image-only
+        // partial index. Finish discovering the library before choosing video.
+        let tree = cachedSnapshot?.tree;
+        let video = tree && mediaIndex.findFirstFile(tree, isVideoFile);
+        if (!video && !cachedSnapshot?.complete) {
+          const root = cachedSnapshot?.rootFolder || await findVideoRootFolder(openedFile, accessToken);
+          if (root) {
+            tree = await buildVideoFolderTreeStreaming(root, accessToken, null, tree);
+            mediaIndex.saveSnapshot(root, tree, true);
+            video = mediaIndex.findFirstFile(tree, isVideoFile);
+          }
+        }
+        if (!video) {
+          setStatus("当前目录没有视频");
+          return;
+        }
+        openedFile = video;
+        currentFileId = video.id;
+        currentResourceKey = video.resourceKey || null;
+        cachedSnapshot = getCachedMediaSnapshot(video.id);
       }
 
       if (!isVideoFile(openedFile)) {

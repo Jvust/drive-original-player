@@ -1,0 +1,24 @@
+name: Navigation regression tests
+on:
+  push:
+    paths: ['assets/**', 'gallery/**', 'index.html', 'tests/**', '.github/workflows/navigation-tests.yml']
+  pull_request:
+    paths: ['assets/**', 'gallery/**', 'index.html', 'tests/**', '.github/workflows/navigation-tests.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check scripts
+        run: |
+          node --check assets/player.js
+          node --check assets/gallery.js
+          node --check assets/navigation.js
+          node --check assets/worker-client.js
+          node --check gallery/sw.js
+      - run: node --test tests/*.test.cjs
