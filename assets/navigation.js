@@ -1,17 +1,16 @@
-/* Keep each view's selection; never send an image to the video view by mistake. */
+/* Keep each view's selection and commit directory progress before leaving. */
 (() => {
   "use strict";
   const base = new URL("../", document.currentScript.src);
   const page = document.body.classList.contains("gallery-page") ? "gallery" : "player";
   const key = "drive-original-selections-v2";
-  let selected = null;
-
+  const leaveHandlers = new Set();
+  let selected = null, navigating = false, refreshing = false;
   function parse(raw) {
     try {
       const state = JSON.parse(raw);
       return state?.action === "open" && Array.isArray(state.ids) &&
-        state.ids.length && state.ids.every(id => typeof id === "string" && id)
-        ? state : null;
+        state.ids.length && state.ids.every(id => typeof id === "string" && id) ? state : null;
     } catch (_) { return null; }
   }
   function readSelections() {
@@ -27,48 +26,84 @@
     const source = selected || parse(new URL(location.href).searchParams.get("state"));
     const snapshot = source ? index?.findSnapshotForFile(source.ids[0]) : index?.loadSnapshot();
     const saved = parse(JSON.stringify(readSelections()[target]));
-    // A new library must not reuse another library's remembered selection.
-    if (saved && (!source || saved.ids[0] === source.ids[0] ||
-        (snapshot && index.findFile(snapshot.tree, saved.ids[0])))) return saved;
+    if (saved && ((!source && snapshot && index.getFile(snapshot, saved.ids[0])) ||
+        saved.ids[0] === source?.ids[0] || (snapshot && index.getFile(snapshot, saved.ids[0])))) return saved;
     const predicate = target === "player" ? window.isVideoFile : window.isImageFile;
     const file = snapshot && typeof predicate === "function"
-      ? index.findFirstFile(snapshot.tree, predicate) : null;
+      ? index.findFirstFile(snapshot.tree, predicate) || (snapshot.sources || []).find(predicate) : null;
     return file ? fileState(file) : source;
   }
   function decorate(anchor) {
     const raw = anchor.getAttribute("href");
-    if (!raw || raw.startsWith("#") || anchor.hasAttribute("download") ||
-        anchor.hasAttribute("target")) return;
+    if (!raw || raw.startsWith("#") || anchor.hasAttribute("download") || anchor.hasAttribute("target")) return null;
     const url = new URL(raw, location.href);
-    if (url.origin !== base.origin) return;
+    if (url.origin !== base.origin) return null;
     const target = [base.pathname, base.pathname + "index.html"].includes(url.pathname)
       ? "player" : [base.pathname + "gallery/", base.pathname + "gallery/index.html"].includes(url.pathname)
         ? "gallery" : null;
-    if (!target) return;
+    if (!target) return null;
     const state = targetState(target);
     if (state) url.searchParams.set("state", JSON.stringify(state));
     else url.searchParams.delete("state");
-    // Distinguishes explicit navigation from Drive's image-to-gallery open route.
     url.searchParams.set("view", target);
     anchor.href = url.href;
+    return target;
   }
   function decorateLinks() { document.querySelectorAll("a[href]").forEach(decorate); }
   function remember(file) {
     selected = fileState(file);
     try {
-      const saved = readSelections();
-      saved[page] = selected;
+      const saved = readSelections(); saved[page] = selected;
       sessionStorage.setItem(key, JSON.stringify(saved));
-    } catch (_) { /* Navigation still works when storage is unavailable. */ }
+    } catch (_) { /* The URL still carries the selection if storage is blocked. */ }
     decorateLinks();
   }
-  window.DriveNavigation = { remember };
+  function capture() {
+    if (refreshing) return;
+    for (const handler of leaveHandlers) {
+      try { handler(); } catch (error) { console.warn("保存浏览位置失败", error); }
+    }
+  }
+  async function refreshLibrary() {
+    if (navigating) return;
+    navigating = refreshing = true;
+    const url = new URL(location.href);
+    const state = selected || parse(url.searchParams.get("state"));
+    if (state) url.searchParams.set("state", JSON.stringify(state));
+    url.searchParams.set("view", page);
+    try { await window.DriveMediaIndex?.clear(); }
+    finally { location.assign(url.href); }
+  }
+  window.DriveNavigation = {
+    remember, refreshLibrary,
+    beforeLeave(handler) { leaveHandlers.add(handler); return () => leaveHandlers.delete(handler); }
+  };
   document.addEventListener("click", event => {
     const anchor = event.target.closest?.("a[href]");
-    if (anchor) decorate(anchor);
+    const target = anchor && decorate(anchor);
+    if (!target || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey ||
+        (event.button !== undefined && event.button !== 0) || typeof event.preventDefault !== "function") return;
+    event.preventDefault();
+    if (navigating || target === page) return;
+    navigating = true;
+    (async () => {
+      try {
+        // A BFCache-restored page may have an older tree than the other view.
+        await window.DriveMediaIndex?.ready(true);
+        capture();
+        await window.DriveMediaIndex?.flush();
+        decorate(anchor);
+      } catch (error) { console.warn("保存目录缓存失败，继续切换", error); }
+      finally { location.assign(anchor.href); }
+    })();
   }, true);
+  window.addEventListener("pagehide", () => { capture(); window.DriveMediaIndex?.flush(); });
   window.addEventListener("pageshow", event => {
+    navigating = false;
     decorateLinks();
-    if (event.persisted) window.refreshWorkerAccessToken?.().catch(console.error);
+    if (event.persisted) {
+      window.DriveMediaIndex?.ready(true).then(decorateLinks);
+      window.refreshWorkerAccessToken?.().catch(console.error);
+    }
   });
 })();

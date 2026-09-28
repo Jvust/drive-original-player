@@ -96,7 +96,7 @@ async function getBridgeAccessToken() {
 function authorizeDrive() { window.location.href = OAUTH_BRIDGE + "/auth"; }
 
 async function initServiceWorker() {
-  await window.DriveWorkerClient.ready();
+  await Promise.all([window.DriveWorkerClient.ready(), window.DriveMediaIndex.ready()]);
   serviceWorkerReady = true;
 }
 
@@ -402,7 +402,8 @@ async function listGalleryTreeChildren(folderFile) {
 
 async function buildGalleryFolderTree(
   rootFolder,
-  existingRootNode = null
+  existingRootNode = null,
+  sourceFile = null
 ) {
   const rootNode =
     existingRootNode &&
@@ -456,6 +457,7 @@ async function buildGalleryFolderTree(
   }
 
   collectUnscannedFolders(rootNode);
+  mediaIndex?.saveSnapshot(rootFolder, rootNode, false, sourceFile);
 
   while (queue.length) {
     const batch = queue.splice(0, 4);
@@ -483,6 +485,8 @@ async function buildGalleryFolderTree(
         }
 
         scannedFolders += 1;
+        // A sibling request can fail or the user can leave before Promise.all completes.
+        mediaIndex?.saveSnapshot(rootFolder, rootNode, false, sourceFile);
 
         setStatus(
           "正在同时读取视频与图片 · " +
@@ -3176,10 +3180,7 @@ window.addEventListener("load", async () => {
 
         if (cachedSnapshot) {
           cachedOpenedFile =
-            mediaIndex.findFile(
-              cachedSnapshot.tree,
-              driveIds[0]
-            );
+            mediaIndex.getFile(cachedSnapshot, driveIds[0]);
 
           if (
             !isImageFile(cachedOpenedFile)
@@ -3244,6 +3245,7 @@ window.addEventListener("load", async () => {
 
     let openedFile =
       cachedOpenedFile ||
+      mediaIndex?.getFile(cachedSnapshot, driveIds[0]) ||
       await fetchFileMetadata(
         driveIds[0]
       );
@@ -3274,8 +3276,7 @@ window.addEventListener("load", async () => {
       } else {
         galleryRootFolder =
           cachedSnapshot &&
-          cachedSnapshot.rootFolder &&
-          cachedOpenedFile
+          cachedSnapshot.rootFolder
             ? cachedSnapshot.rootFolder
             : await findGalleryRootFolder(
                 openedFile
@@ -3309,7 +3310,8 @@ window.addEventListener("load", async () => {
               cachedSnapshot.tree.file.id ===
                 galleryRootFolder.id
                 ? cachedSnapshot.tree
-                : null
+                : null,
+              openedFile
             );
 
           galleryFiles =
@@ -3382,10 +3384,19 @@ window.addEventListener("load", async () => {
       );
     }
 
+    const storedGalleryView = mediaIndex?.getView("gallery", galleryRootFolder?.id);
+    const savedGalleryView = storedGalleryView?.fileId === openedFile.id ? storedGalleryView : null;
+    if (savedGalleryView) {
+      expandedGalleryFolders.clear();
+      for (const id of savedGalleryView.expandedFolders || []) {
+        if (mediaIndex.findFile(galleryTreeRoot, id)) expandedGalleryFolders.add(id);
+      }
+    }
     renderGallery();
     startGalleryBackgroundSlideshow();
 
     requestAnimationFrame(() => {
+      if (savedGalleryView) { window.scrollTo(0, Number(savedGalleryView.scrollY) || 0); return; }
       const activeCard =
         document.querySelector(
           '.card[data-index="' +
@@ -3418,3 +3429,16 @@ setInterval(refreshWorkerAccessToken, 30 * 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshWorkerAccessToken(); });
 window.addEventListener("focus", refreshWorkerAccessToken);
 
+
+
+window.DriveNavigation.beforeLeave(() => {
+  if (!galleryRootFolder || !galleryTreeRoot) return;
+  const index = window.DriveMediaIndex;
+  const file = galleryFiles[currentIndex];
+  if (file) window.DriveNavigation.remember(file);
+  const cached = index.findSnapshotForRoot(galleryRootFolder.id);
+  index.saveSnapshot(galleryRootFolder, galleryTreeRoot, cached?.complete === true, file);
+  index.saveView("gallery", galleryRootFolder.id, {
+    fileId: file?.id, expandedFolders: [...expandedGalleryFolders], scrollY: window.scrollY || 0
+  });
+});

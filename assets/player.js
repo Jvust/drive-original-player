@@ -1739,7 +1739,7 @@ document.addEventListener(
 );
 
 async function initServiceWorker() {
-  await window.DriveWorkerClient.ready();
+  await Promise.all([window.DriveWorkerClient.ready(), window.DriveMediaIndex.ready()]);
   serviceWorkerReady = true;
 }
   function setStatus(text) {
@@ -2835,6 +2835,9 @@ async function initServiceWorker() {
           file: videoRootFolder,
           children: []
         };
+
+      // Preserve the verified root/seed relationship before the first directory request.
+      window.DriveMediaIndex?.saveSnapshot(videoRootFolder, videoTreeRoot, false, openedFile);
 
       const listBtn =
         document.getElementById(
@@ -5859,6 +5862,7 @@ async function initServiceWorker() {
    */
 
  window.addEventListener("load", async () => {
+    captureOAuthSession(); // Set the account scope before restoring cached metadata.
    
    try { await initServiceWorker(); }
    catch (error) { setStatus("媒体服务启动失败"); showError(error.message); return; }
@@ -6006,10 +6010,7 @@ function authorizeDrive() {
 
       let openedFile =
         mediaIndex && cachedSnapshot
-          ? mediaIndex.findFile(
-              cachedSnapshot.tree,
-              currentFileId
-            )
+          ? mediaIndex.getFile(cachedSnapshot, currentFileId)
           : null;
 
       if (openedFile) {
@@ -6122,10 +6123,9 @@ function authorizeDrive() {
 
       renderVideoPlaylist();
 
-      await switchVideoByIndex(
-        0,
-        true
-      );
+      const storedPlayerView = mediaIndex?.getView("player", cachedSnapshot?.rootFolder.id);
+      const savedPlayerView = storedPlayerView?.fileId === openedFile.id ? storedPlayerView : null;
+      await switchVideoByIndex(0, savedPlayerView ? !savedPlayerView.paused : true);
 
       const usableSnapshot =
         cachedSnapshot ||
@@ -6207,6 +6207,7 @@ function authorizeDrive() {
           accessToken
         );
       }
+      restorePlayerNavigationState(savedPlayerView);
     } catch (err) {
       console.error(err);
       setStatus("读取失败");
@@ -6274,3 +6275,46 @@ window.addEventListener(
   refreshWorkerAccessToken
 );
 
+
+
+// A page switch saves metadata and UI state, never video bytes or access tokens.
+window.DriveNavigation.beforeLeave(() => {
+  if (!videoRootFolder || !videoTreeRoot) return;
+  const index = window.DriveMediaIndex;
+  const player = document.getElementById("player");
+  const file = videoPlaylist[currentVideoIndex];
+  if (file) window.DriveNavigation.remember(file);
+  index.saveSnapshot(videoRootFolder, videoTreeRoot, !videoTreeScanInProgress, file);
+  index.saveView("player", videoRootFolder.id, {
+    fileId: currentFileId, time: Number.isFinite(player?.currentTime) ? player.currentTime : 0,
+    paused: !!player?.paused, expandedFolders: [...expandedVideoFolders],
+    playlistOpen: document.getElementById("playerWrap")?.classList.contains("playlist-open") || false,
+    listScrollTop: document.getElementById("videoPlaylistItems")?.scrollTop || 0,
+    scrollY: window.scrollY || 0
+  });
+});
+function restorePlayerNavigationState(state) {
+  if (!state || state.fileId !== currentFileId) return;
+  for (const id of state.expandedFolders || []) {
+    if (window.DriveMediaIndex.findFile(videoTreeRoot, id)) expandedVideoFolders.add(id);
+  }
+  if (state.playlistOpen) {
+    document.getElementById("playerWrap").classList.add("playlist-open");
+    videoPlaylistDomReady = false;
+    renderVideoPlaylist();
+  }
+  const player = document.getElementById("player");
+  const seek = () => {
+    if (state.fileId !== currentFileId || !Number.isFinite(state.time)) return;
+    const end = Number.isFinite(player.duration) ? Math.max(0, player.duration - 0.05) : state.time;
+    try { player.currentTime = Math.max(0, Math.min(state.time, end)); } catch (_) {}
+    if (state.paused) player.pause();
+  };
+  if (player.readyState >= 1) seek();
+  else player.addEventListener("loadedmetadata", seek, { once: true });
+  requestAnimationFrame(() => {
+    const list = document.getElementById("videoPlaylistItems");
+    if (list) list.scrollTop = Number(state.listScrollTop) || 0;
+    window.scrollTo(0, Number(state.scrollY) || 0);
+  });
+}
