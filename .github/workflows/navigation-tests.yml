@@ -16,6 +16,7 @@ jobs:
           node-version: '22'
       - name: Check scripts
         run: |
+          node --check assets/media-index.js
           node --check assets/player.js
           node --check assets/gallery.js
           node --check assets/navigation.js
