@@ -2593,7 +2593,857 @@ async function initServiceWorker() {
       rootNode;
 
     const activeId =
-      current…4378 tokens truncated… );
+      currentFileId ||
+      openedFile.id;
+
+    let nextPlaylist =
+      flattenVideosFromTree(
+        videoTreeRoot
+      );
+
+    const globalHasActive =
+      nextPlaylist.some(
+        file =>
+          file &&
+          file.id === activeId
+      );
+
+    if (
+      !globalHasActive &&
+      provisionalSiblingVideos.length &&
+      provisionalSiblingVideos.some(
+        file =>
+          file.id === activeId
+      )
+    ) {
+      /*
+       * 全局扫描还没到当前分支：
+       * 保留已经提前拿到的同目录列表，
+       * 不让当前同目录列表被不完整的全局快照冲掉。
+       */
+      nextPlaylist =
+        provisionalSiblingVideos
+          .slice();
+    } else {
+      nextPlaylist =
+        ensureOpenedVideoInPlaylist(
+          openedFile,
+          nextPlaylist
+        );
+
+      if (globalHasActive) {
+        provisionalSiblingVideos =
+          [];
+      }
+    }
+
+    nextPlaylist.forEach(
+      (file, index) => {
+        file._playlistIndex =
+          index;
+      }
+    );
+
+    videoPlaylist =
+      nextPlaylist;
+
+    currentVideoIndex =
+      videoPlaylist.findIndex(
+        file =>
+          file.id === activeId
+      );
+
+    if (currentVideoIndex < 0) {
+      currentVideoIndex = 0;
+    }
+
+    /*
+     * 只“补充展开”当前视频路径，
+     * 不清除用户自己已经展开的目录。
+     */
+    ensureVideoPathExpanded(
+      videoTreeRoot,
+      activeId
+    );
+
+    videoPlaylistDomReady =
+      false;
+
+    const listBtn =
+      document.getElementById(
+        "videoListBtn"
+      );
+
+    if (listBtn) {
+      listBtn.style.display =
+        (
+          videoTreeRoot ||
+          videoPlaylist.length > 1
+        )
+          ? "inline-block"
+          : "none";
+    }
+
+    if (
+      !finished
+    ) {
+      setStatus(
+        "Original · 播放中 · 同时读取视频与图片 · 后台读取 " +
+        (
+          videoRootFolder
+            ? videoRootFolder.name
+            : VIDEO_ROOT_FOLDER_NAME
+        ) +
+        " · " +
+        scannedFolders +
+        " 个文件夹 · " +
+        videoPlaylist.length +
+        " 个视频"
+      );
+    } else {
+      setStatus(
+        sharpenMode === 0
+          ? (
+              "Original · 流畅模式（手动） · " +
+              scannedFolders +
+              " 个文件夹已读取"
+            )
+          : (
+              gpuActive
+                ? (
+                    "Original · WebGPU 高质量渲染 · " +
+                    scannedFolders +
+                    " 个文件夹已读取（视频与图片）"
+                  )
+                : (
+                    "Original · 平衡模式 · " +
+                    scannedFolders +
+                    " 个文件夹已读取（视频与图片）"
+                  )
+            )
+      );
+    }
+
+    scheduleVideoTreeUiRefresh();
+
+  }
+
+  async function startVideoTreeScanInBackground(
+    openedFile,
+    accessToken
+  ) {
+    if (
+      videoTreeScanInProgress
+    ) {
+      return;
+    }
+
+    const cachedSnapshot =
+      getCachedMediaSnapshot(
+        openedFile && openedFile.id
+      );
+
+    if (
+      cachedSnapshot &&
+      cachedSnapshot.complete === true
+    ) {
+      const mediaIndex =
+        window.DriveMediaIndex;
+
+      videoRootFolder =
+        cachedSnapshot.rootFolder ||
+        cachedSnapshot.tree.file;
+
+      videoTreeRoot =
+        cachedSnapshot.tree;
+
+      videoTreeScannedFolders =
+        mediaIndex &&
+        typeof mediaIndex.countFolders ===
+          "function"
+          ? mediaIndex.countFolders(
+              videoTreeRoot
+            )
+          : countVideoTreeFolders(
+              videoTreeRoot
+            );
+
+      applyVideoTreeScanSnapshot(
+        openedFile,
+        videoTreeRoot,
+        videoTreeScannedFolders,
+        true
+      );
+
+      return;
+    }
+
+    videoTreeScanInProgress =
+      true;
+
+    videoTreeScannedFolders =
+      0;
+
+    videoTreeScanOpenedFile =
+      openedFile;
+
+    try {
+      /*
+       * 这一步也放到播放之后：
+       * 先看视频，再沿 parents 向上定位 1433223。
+       */
+      videoRootFolder =
+        cachedSnapshot &&
+        cachedSnapshot.rootFolder
+          ? cachedSnapshot.rootFolder
+          : await findVideoRootFolder(
+              openedFile,
+              accessToken
+            );
+
+      if (!videoRootFolder) {
+        return;
+      }
+
+      /*
+       * 先立即建立一个空 root，
+       * 让“列表”按钮可以出现；
+       * children 会随着后台扫描逐步补全。
+       */
+      const reusableSnapshot =
+        cachedSnapshot &&
+        cachedSnapshot.rootFolder &&
+        cachedSnapshot.rootFolder.id ===
+          videoRootFolder.id
+          ? cachedSnapshot
+          : window.DriveMediaIndex &&
+            window.DriveMediaIndex.findSnapshotForRoot(
+              videoRootFolder.id
+            );
+
+      const existingRootNode =
+        reusableSnapshot &&
+        reusableSnapshot.tree &&
+        reusableSnapshot.tree.file &&
+        reusableSnapshot.tree.file.id ===
+          videoRootFolder.id
+          ? reusableSnapshot.tree
+          : null;
+
+      videoTreeRoot =
+        existingRootNode || {
+          file: videoRootFolder,
+          children: []
+        };
+
+      const listBtn =
+        document.getElementById(
+          "videoListBtn"
+        );
+
+      if (listBtn) {
+        listBtn.style.display =
+          "inline-block";
+      }
+
+      videoTreeRoot =
+        await buildVideoFolderTreeStreaming(
+          videoRootFolder,
+          accessToken,
+          progress => {
+            videoTreeScannedFolders =
+              progress.scannedFolders;
+
+            applyVideoTreeScanSnapshot(
+              openedFile,
+              progress.rootNode,
+              progress.scannedFolders,
+              progress.finished
+            );
+
+            if (window.DriveMediaIndex) {
+              window.DriveMediaIndex.saveSnapshot(
+                videoRootFolder,
+                progress.rootNode,
+                progress.finished
+              );
+            }
+          },
+          existingRootNode
+        );
+
+      if (window.DriveMediaIndex) {
+        window.DriveMediaIndex.saveSnapshot(
+          videoRootFolder,
+          videoTreeRoot
+        );
+      }
+    } catch (error) {
+      /*
+       * 后台目录读取失败绝不能打断已经在播放的视频。
+       */
+      console.warn(
+        "后台读取递归媒体文件树失败，继续当前视频：",
+        error
+      );
+
+      setStatus(
+        "Original · 当前视频继续播放 · 后台目录读取失败"
+      );
+    } finally {
+      videoTreeScanInProgress =
+        false;
+
+      videoTreeScanOpenedFile =
+        null;
+
+      if (
+        videoTreeScanRefreshTimer
+      ) {
+        clearTimeout(
+          videoTreeScanRefreshTimer
+        );
+
+        videoTreeScanRefreshTimer =
+          null;
+      }
+
+      if (
+        videoPlaylistDomReady === false
+      ) {
+        const wrap =
+          document.getElementById(
+            "playerWrap"
+          );
+
+        if (
+          wrap &&
+          wrap.classList.contains(
+            "playlist-open"
+          )
+        ) {
+          renderVideoPlaylist();
+        }
+      }
+    }
+  }
+
+
+  function flattenVideosFromTree(rootNode) {
+    const result = [];
+
+    function walk(node, pathParts) {
+      if (!node || !node.file) return;
+
+      const folderName =
+        node.file.name || "Folder";
+
+      const currentPath =
+        [...pathParts, folderName];
+
+      for (const child of node.children || []) {
+        if (isDriveFolder(child.file)) {
+          walk(child, currentPath);
+        } else if (isVideoFile(child.file)) {
+          child.file._folderPath =
+            currentPath.join(" / ");
+          result.push(child.file);
+        }
+      }
+    }
+
+    if (rootNode) {
+      walk(rootNode, []);
+    }
+
+    result.forEach((file, index) => {
+      file._playlistIndex = index;
+    });
+
+    return result;
+  }
+
+
+  /*
+   * 只展开“当前视频所在路径”。
+   *
+   * 例如：
+   * 1433223
+   * ├─ A
+   * │  └─ A1
+   * │     └─ target.mp4
+   * ├─ B
+   * └─ C
+   *
+   * 初始只展开：
+   * 1433223 → A → A1
+   * B / C 保持折叠。
+   */
+  function expandOnlyPathToVideo(
+    rootNode,
+    targetVideoId
+  ) {
+    expandedVideoFolders.clear();
+
+    if (
+      !rootNode ||
+      !targetVideoId
+    ) {
+      return false;
+    }
+
+    function findTarget(node) {
+      if (
+        !node ||
+        !node.file
+      ) {
+        return false;
+      }
+
+      for (
+        const child of
+        node.children || []
+      ) {
+        if (
+          isVideoFile(child.file) &&
+          child.file.id === targetVideoId
+        ) {
+          // 当前 node 就是目标视频的直接父文件夹。
+          expandedVideoFolders.add(
+            node.file.id
+          );
+          return true;
+        }
+
+        if (
+          isDriveFolder(child.file) &&
+          findTarget(child)
+        ) {
+          // 目标视频位于这个子文件夹内部，
+          // 所以当前祖先文件夹也必须展开。
+          expandedVideoFolders.add(
+            node.file.id
+          );
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    return findTarget(rootNode);
+  }
+
+  /*
+   * 切换到别的视频后，只“补开”它所在的路径，
+   * 不强制关闭用户手动打开的其他文件夹。
+   */
+  function ensureVideoPathExpanded(
+    rootNode,
+    targetVideoId
+  ) {
+    if (
+      !rootNode ||
+      !targetVideoId
+    ) {
+      return false;
+    }
+
+    function findTarget(node) {
+      if (
+        !node ||
+        !node.file
+      ) {
+        return false;
+      }
+
+      for (
+        const child of
+        node.children || []
+      ) {
+        if (
+          isVideoFile(child.file) &&
+          child.file.id === targetVideoId
+        ) {
+          expandedVideoFolders.add(
+            node.file.id
+          );
+          return true;
+        }
+
+        if (
+          isDriveFolder(child.file) &&
+          findTarget(child)
+        ) {
+          expandedVideoFolders.add(
+            node.file.id
+          );
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    return findTarget(rootNode);
+  }
+
+  function countVideoTreeFolders(rootNode) {
+    let count = 0;
+
+    function walk(node, includeSelf) {
+      if (!node) return;
+      if (includeSelf) count += 1;
+
+      for (const child of node.children || []) {
+        if (isDriveFolder(child.file)) {
+          walk(child, true);
+        }
+      }
+    }
+
+    walk(rootNode, false);
+    return count;
+  }
+
+  function formatFileSize(size) {
+    const value = Number(size);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    if (value >= 1024 ** 3) return (value / 1024 ** 3).toFixed(1) + " GB";
+    if (value >= 1024 ** 2) return (value / 1024 ** 2).toFixed(0) + " MB";
+    return (value / 1024).toFixed(0) + " KB";
+  }
+
+
+  function syncVideoPlaylistDomState() {
+    const items =
+      document.getElementById(
+        "videoPlaylistItems"
+      );
+
+    if (!items) return;
+
+    const previous =
+      items.querySelector(
+        ".video-playlist-item.active"
+      );
+
+    if (previous) {
+      previous.classList.remove(
+        "active"
+      );
+
+      previous.removeAttribute(
+        "aria-current"
+      );
+    }
+
+    const current =
+      items.querySelector(
+        `.video-playlist-item[data-index="${currentVideoIndex}"]`
+      );
+
+    if (current) {
+      current.classList.add(
+        "active"
+      );
+
+      current.setAttribute(
+        "aria-current",
+        "true"
+      );
+    }
+
+    for (
+      const folder of
+      items.querySelectorAll(
+        ".drive-tree-folder[data-folder-id]"
+      )
+    ) {
+      const folderId =
+        folder.dataset.folderId;
+
+      folder.classList.toggle(
+        "collapsed",
+        !expandedVideoFolders.has(
+          folderId
+        )
+      );
+    }
+  }
+
+  function postWorkerMessage(
+    worker,
+    data,
+    timeout = 260
+  ) {
+    return new Promise(resolve => {
+      if (!worker) {
+        resolve(false);
+        return;
+      }
+
+      const channel =
+        new MessageChannel();
+
+      let settled = false;
+
+      const finish =
+        value => {
+          if (settled) return;
+          settled = true;
+
+          clearTimeout(timer);
+
+          try {
+            channel.port1.close();
+          } catch (_) {}
+
+          resolve(value);
+        };
+
+      channel.port1.onmessage =
+        event => {
+          finish(
+            !!event.data?.ok
+          );
+        };
+
+      const timer =
+        setTimeout(
+          () => finish(false),
+          timeout
+        );
+
+      try {
+        worker.postMessage(
+          data,
+          [channel.port2]
+        );
+      } catch (_) {
+        finish(false);
+      }
+    });
+  }
+
+
+  function getVideoMediaUrl(file) {
+    if (!file?.id) {
+      return "";
+    }
+
+    let url =
+      "./media/" +
+      encodeURIComponent(
+        file.id
+      );
+
+    if (file.resourceKey) {
+      url +=
+        "?resourceKey=" +
+        encodeURIComponent(
+          file.resourceKey
+        );
+    }
+
+    return url;
+  }
+
+  async function downloadCurrentVideo() {
+    const file = videoPlaylist[currentVideoIndex];
+
+    if (!file || !file.id) {
+      setStatus("当前没有可下载的视频。");
+      return;
+    }
+
+    if (file.capabilities && file.capabilities.canDownload === false) {
+      setStatus("这个 Google Drive 文件禁止下载。");
+      return;
+    }
+
+    try {
+      await sendCurrentVideoStateToWorker(file);
+
+      const url = new URL(
+        getVideoMediaUrl(file),
+        window.location.href
+      );
+      url.searchParams.set("download", "1");
+      url.searchParams.set("filename", file.name || "video.mp4");
+
+      const anchor = document.createElement("a");
+      anchor.href = url.href;
+      anchor.download = file.name || "video.mp4";
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      setStatus("已开始下载 · " + (file.name || "视频文件"));
+    } catch (error) {
+      console.error("视频下载启动失败：", error);
+      setStatus("下载启动失败 · 请重新连接 Google Drive 后再试");
+    }
+  }
+
+  function renderVideoPlaylist() {
+    const items =
+      document.getElementById("videoPlaylistItems");
+
+    const title =
+      document.getElementById("playlistTitle");
+
+    if (!items) return;
+
+    const folderCount =
+      videoTreeRoot
+        ? countVideoTreeFolders(videoTreeRoot)
+        : 0;
+
+    if (title) {
+      title.textContent =
+        (videoRootFolder
+          ? videoRootFolder.name
+          : "视频目录") +
+        " · " +
+        folderCount +
+        " 个子文件夹 · " +
+        videoPlaylist.length +
+        " 个视频" +
+        (
+          videoTreeScanInProgress
+            ? " · 后台读取中"
+            : ""
+        );
+    }
+
+    items.innerHTML = "";
+
+    if (!videoTreeRoot) {
+      videoPlaylist.forEach((file, index) => {
+        items.appendChild(
+          createVideoTreeMediaItem(file, index)
+        );
+      });
+
+      videoPlaylistDomReady = true;
+      return;
+    }
+
+    function renderFolder(node, depth = 0) {
+      const folderWrap =
+        document.createElement("div");
+
+      folderWrap.className =
+        "drive-tree-folder";
+
+      folderWrap.dataset.folderId =
+        node.file.id;
+
+      if (
+        !expandedVideoFolders.has(
+          node.file.id
+        )
+      ) {
+        folderWrap.classList.add("collapsed");
+      }
+
+      const folderRow =
+        document.createElement("button");
+
+      folderRow.type = "button";
+      folderRow.className =
+        "drive-folder-row";
+
+      folderRow.style.paddingLeft =
+        Math.min(8 + depth * 2, 22) + "px";
+
+      const chevron =
+        document.createElement("span");
+
+      chevron.className =
+        "drive-folder-chevron";
+
+      chevron.textContent = "›";
+
+      const icon =
+        document.createElement("span");
+
+      icon.className =
+        "drive-folder-icon";
+
+      icon.textContent = "📁";
+
+      const name =
+        document.createElement("span");
+
+      name.className =
+        "drive-folder-name";
+
+      name.textContent =
+        node.file.name || "Folder";
+
+      const directMedia =
+        (node.children || [])
+          .filter(child =>
+            isVideoFile(child.file)
+          ).length;
+
+      const directFolders =
+        (node.children || [])
+          .filter(child =>
+            isDriveFolder(child.file)
+          ).length;
+
+      const count =
+        document.createElement("span");
+
+      count.className =
+        "drive-folder-count";
+
+      const countParts = [];
+
+      if (directFolders) {
+        countParts.push(
+          directFolders + "夹"
+        );
+      }
+
+      if (directMedia) {
+        countParts.push(
+          directMedia + "视频"
+        );
+      }
+
+      count.textContent =
+        countParts.join(" · ");
+
+      folderRow.append(
+        chevron,
+        icon,
+        name,
+        count
+      );
+
+      const children =
+        document.createElement("div");
+
+      children.className =
+        "drive-folder-children";
+
+      folderRow.addEventListener(
+        "click",
+        () => {
+          const id = node.file.id;
+
+          if (
+            expandedVideoFolders.has(id)
+          ) {
+            expandedVideoFolders.delete(id);
+            folderWrap.classList.add(
+              "collapsed"
+            );
           } else {
             expandedVideoFolders.add(id);
             folderWrap.classList.remove(
