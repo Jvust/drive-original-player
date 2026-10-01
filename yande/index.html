@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>星映 · Yande.re 原图画廊</title>
+  <meta name="description" content="浏览 2026 年 1 月 1 日至 9 月 30 日 Yande.re 日榜中的非露骨插画，打开作品欣赏原图。" />
+  <link rel="icon" href="../assets/star.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="../assets/theme.css?v=starlight-5" />
+  <link rel="stylesheet" href="../assets/yande.css?v=1" />
+  <script src="../assets/yande.js?v=1" defer></script>
+</head>
+<body class="yande-page">
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <header class="site-header">
+    <a class="site-brand" href="../"><span class="brand-star" aria-hidden="true">✦</span><span>星映<small>HOSHI / ORIGINAL</small></span></a>
+    <nav class="site-nav" aria-label="主导航"><a href="../">放映室</a><a href="../gallery/">图片收藏</a><a href="./" aria-current="page">Yande.re 画廊</a></nav>
+    <span class="archive-badge">2026 COLLECTION</span>
+  </header>
+  <main id="mainContent">
+    <section class="archive-hero">
+      <div><span class="eyebrow">A LITTLE WONDER, EVERY DAY</span><h1>把这一年的心动，<br><span>慢慢收藏。</span></h1><p>Yande.re 日榜 · 2026.01.01 — 2026.09.30</p><p class="archive-note">完整收录日榜返回的作品，包含源站因 blacklist 隐藏的 post。打开作品，欣赏原图。</p></div>
+      <div class="hero-calendar" aria-hidden="true"><span>JAN — SEP</span><strong>273</strong><span>DAYS OF INSPIRATION</span><i>✧</i></div>
+    </section>
+    <section class="archive-controls" aria-label="筛选作品">
+      <div id="monthTabs" class="month-tabs" aria-label="按月浏览"></div>
+      <form id="rangeForm">
+        <label>开始日期<input id="startDate" type="date" min="2026-01-01" max="2026-09-30" value="2026-01-01" required /></label>
+        <span class="date-separator" aria-hidden="true">—</span>
+        <label>结束日期<input id="endDate" type="date" min="2026-01-01" max="2026-09-30" value="2026-09-30" required /></label>
+        <button type="submit">查看日期</button>
+        <label>评级<select id="ratingFilter"><option value="all">全部评级</option><option value="s">安全 · S</option><option value="q">可疑 · Q</option><option value="e">露骨 · E</option></select></label>
+        <label>排序<select id="sortOrder"><option value="date">日期从新到旧</option><option value="score">评分从高到低</option></select></label>
+        <button id="randomButton" class="primary" type="button" disabled>✧ 随机邂逅</button>
+      </form>
+    </section>
+    <div class="archive-heading"><h2 id="rangeTitle">全部收藏</h2><p id="archiveStatus" role="status" aria-live="polite">正在打开画廊…</p></div>
+    <p id="archiveError" role="alert" hidden></p>
+    <button id="retryButton" type="button" hidden>重新加载</button>
+    <div id="archiveGrid" class="archive-grid" aria-label="作品列表"></div>
+    <div class="load-more"><button id="loadMore" type="button" hidden>加载更多作品</button><p id="gridProgress"></p></div>
+    <p class="source-note">榜单元数据按日期归档，重复作品合并展示；图片由 Yande.re 提供。<span id="snapshotDate"></span></p>
+  </main>
+  <footer class="site-footer"><a href="../" class="footer-brand">✦ 星映 <span>HOSHI</span></a><span>为喜欢，留一点时间。</span><span class="footer-signature">A GALLERY OF LITTLE WONDERS</span></footer>
+  <dialog id="artViewer" aria-label="原图查看器">
+    <div class="art-toolbar"><div><strong id="artTitle"></strong><span id="artMeta"></span></div><a id="originalLink" target="_blank" rel="noopener noreferrer">打开原图 ↗</a><button id="zoomButton" type="button" aria-pressed="false">原尺寸</button><button id="fullscreenButton" type="button">全屏</button><button id="closeViewer" type="button" aria-label="关闭原图查看器">关闭 ×</button></div>
+    <div id="artStage"><img id="artImage" alt="" referrerpolicy="no-referrer" /><p id="artLoading" role="status">正在加载原图…</p></div>
+    <div class="art-bottom"><button id="previousArt" type="button" aria-label="上一张">← 上一张</button><span id="artCounter"></span><button id="nextArt" type="button" aria-label="下一张">下一张 →</button></div>
+  </dialog>
+</body>
+</html>

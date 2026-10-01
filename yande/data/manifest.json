@@ -1,0 +1,65 @@
+{
+  "start": "2026-01-01",
+  "end": "2026-09-30",
+  "fetchedAt": "2026-10-01T05:12:05.141973+00:00",
+  "source": "https://yande.re/post/popular_by_day",
+  "includesHiddenPosts": true,
+  "days": 273,
+  "count": 10463,
+  "months": [
+    {
+      "month": "2026-01",
+      "file": "2026-01.json.gz",
+      "days": 31,
+      "count": 1216
+    },
+    {
+      "month": "2026-02",
+      "file": "2026-02.json.gz",
+      "days": 28,
+      "count": 1087
+    },
+    {
+      "month": "2026-03",
+      "file": "2026-03.json.gz",
+      "days": 31,
+      "count": 1231
+    },
+    {
+      "month": "2026-04",
+      "file": "2026-04.json.gz",
+      "days": 30,
+      "count": 1193
+    },
+    {
+      "month": "2026-05",
+      "file": "2026-05.json.gz",
+      "days": 31,
+      "count": 1203
+    },
+    {
+      "month": "2026-06",
+      "file": "2026-06.json.gz",
+      "days": 30,
+      "count": 1175
+    },
+    {
+      "month": "2026-07",
+      "file": "2026-07.json.gz",
+      "days": 31,
+      "count": 1127
+    },
+    {
+      "month": "2026-08",
+      "file": "2026-08.json.gz",
+      "days": 31,
+      "count": 1087
+    },
+    {
+      "month": "2026-09",
+      "file": "2026-09.json.gz",
+      "days": 30,
+      "count": 1144
+    }
+  ]
+}
