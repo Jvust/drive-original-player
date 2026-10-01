@@ -1416,6 +1416,135 @@ function formatSeconds(value) {
   );
 }
 
+/*
+ * 时间轴预览：使用一个静音、独立的 video 读取悬停位置，避免为了显示缩略图
+ * 改变主播放器的 currentTime、播放状态或 WebGPU 画面。
+ */
+let timelinePreviewVideo = null;
+let timelinePreviewSource = "";
+let timelinePreviewTarget = null;
+let timelinePreviewSeekTimer = null;
+let timelineSeeking = false;
+
+function drawTimelinePreview() {
+  const canvas = document.getElementById("timelinePreviewCanvas");
+  const video = timelinePreviewVideo;
+  if (!canvas || !video || video.readyState < 2 || !video.videoWidth) return;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const width = canvas.width;
+  const height = canvas.height;
+  const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+  const drawWidth = video.videoWidth * scale;
+  const drawHeight = video.videoHeight * scale;
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(video, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+}
+
+function syncTimelinePreviewSource(player = document.getElementById("player")) {
+  if (!timelinePreviewVideo || !player) return;
+  const source = player.currentSrc || player.src;
+  if (!source || source === timelinePreviewSource) return;
+
+  timelinePreviewSource = source;
+  timelinePreviewVideo.pause();
+  timelinePreviewVideo.src = source;
+  timelinePreviewVideo.load();
+}
+
+function scheduleTimelinePreviewSeek(target) {
+  timelinePreviewTarget = target;
+  clearTimeout(timelinePreviewSeekTimer);
+  timelinePreviewSeekTimer = setTimeout(() => {
+    const video = timelinePreviewVideo;
+    const next = timelinePreviewTarget;
+    if (!video || next === null || video.readyState < 1) return;
+    try { video.currentTime = next; } catch (_) {}
+  }, 70);
+}
+
+function updateTimelineFromPlayer(player = document.getElementById("player")) {
+  const seek = document.getElementById("timelineSeek");
+  if (!seek || !player || timelineSeeking) return;
+  const duration = Number(player.duration);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    seek.value = "0";
+    seek.disabled = true;
+    return;
+  }
+  seek.disabled = false;
+  seek.value = String(Math.round((player.currentTime / duration) * 1000));
+}
+
+function initTimelinePreview() {
+  const timeline = document.getElementById("videoTimeline");
+  const seek = document.getElementById("timelineSeek");
+  const preview = document.getElementById("timelinePreview");
+  const previewTime = document.getElementById("timelinePreviewTime");
+  const player = document.getElementById("player");
+  if (!timeline || !seek || !preview || !previewTime || !player || timeline.dataset.ready === "1") return;
+  timeline.dataset.ready = "1";
+
+  timelinePreviewVideo = document.createElement("video");
+  timelinePreviewVideo.muted = true;
+  timelinePreviewVideo.playsInline = true;
+  timelinePreviewVideo.preload = "metadata";
+  timelinePreviewVideo.setAttribute("aria-hidden", "true");
+  timelinePreviewVideo.addEventListener("loadeddata", drawTimelinePreview);
+  timelinePreviewVideo.addEventListener("seeked", drawTimelinePreview);
+
+  const updatePreview = event => {
+    const duration = Number(player.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const rect = seek.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const target = ratio * duration;
+    timeline.style.setProperty("--preview-position", `${ratio * 100}%`);
+    preview.hidden = false;
+    previewTime.textContent = formatSeconds(target);
+    syncTimelinePreviewSource(player);
+    scheduleTimelinePreviewSeek(target);
+  };
+
+  timeline.addEventListener("pointermove", updatePreview);
+  timeline.addEventListener("pointerenter", updatePreview);
+  timeline.addEventListener("pointerleave", () => {
+    preview.hidden = true;
+    timelinePreviewTarget = null;
+  });
+
+  seek.addEventListener("pointerdown", () => {
+    timelineSeeking = true;
+    syncTimelinePreviewSource(player);
+  });
+  seek.addEventListener("input", () => {
+    const duration = Number(player.duration);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const target = (Number(seek.value) / 1000) * duration;
+    previewTime.textContent = formatSeconds(target);
+    player.currentTime = target;
+  });
+  const finishSeek = () => {
+    timelineSeeking = false;
+    updateTimelineFromPlayer(player);
+  };
+  seek.addEventListener("change", finishSeek);
+  seek.addEventListener("pointerup", finishSeek);
+  seek.addEventListener("pointercancel", finishSeek);
+
+  ["loadedmetadata", "durationchange", "timeupdate", "progress", "seeking", "seeked"].forEach(eventName => {
+    player.addEventListener(eventName, () => {
+      updateTimelineFromPlayer(player);
+      if (eventName === "loadedmetadata") syncTimelinePreviewSource(player);
+    });
+  });
+  updateTimelineFromPlayer(player);
+  syncTimelinePreviewSource(player);
+}
+
 function getBufferedAhead(player) {
   try {
     const current = player.currentTime;
@@ -3764,6 +3893,7 @@ async function initServiceWorker() {
     player.preload = "auto";
     player.src = mediaUrl;
     player.load();
+    syncTimelinePreviewSource(player);
     applySharpenMode();
 
     setStatus(
@@ -4057,6 +4187,7 @@ async function initServiceWorker() {
       document.getElementById("player");
 
     initGpuMediaControls();
+    initTimelinePreview();
     initFullscreenAutoHide();
     startGpuHealthMonitor();
     bindVideoPlayerEvents(player);
