@@ -82,6 +82,13 @@
         <canvas id="seekHoldCanvas"></canvas>
         <div id="seekHoldText">正在跳转…</div>
       </div>
+      <div id="videoTimeline" aria-label="视频进度预览">
+        <div id="timelinePreview" role="status" aria-live="polite" hidden>
+          <canvas id="timelinePreviewCanvas" width="320" height="180" aria-hidden="true"></canvas>
+          <span id="timelinePreviewTime">00:00</span>
+        </div>
+        <input id="timelineSeek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度，悬停可预览画面" />
+      </div>
     </div>
 
     <div id="videoQuickControls" aria-label="视频快捷控制">
