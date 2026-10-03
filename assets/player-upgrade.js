@@ -80,7 +80,7 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
-    if (e.key.toLowerCase() === "l") { video.loop = !video.loop; loopBtn.click(); }
+    if (e.key.toLowerCase() === "l") loopBtn.click();
     if (e.key.toLowerCase() === "f") floatBtn.click();
     if (e.key.toLowerCase() === "p") pipBtn.click();
     if (e.key === "Escape" && document.body.classList.contains("drive-floating-player")) {
