@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07090f" />
+    <meta name="description" content="AI Gallery · 全屏图片与视频静态画廊" />
+    <title>AI Gallery · 全屏媒体画廊</title>
+    <link rel="preconnect" href="https://images.unsplash.com" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app" id="app">
+      <section class="stage" id="stage" aria-label="媒体展示区">
+        <div class="ambient" aria-hidden="true"></div>
+        <div class="media-wrap" id="mediaWrap">
+          <img id="image" alt="" draggable="false" />
+          <video id="video" playsinline preload="metadata"></video>
+          <div class="media-loading" id="mediaLoading" aria-live="polite">正在加载媒体…</div>
+          <div class="empty-state" id="emptyState" hidden>
+            <span class="empty-icon">✦</span>
+            <h2>把你的故事放进来</h2>
+            <p>拖入图片或视频，或者使用右上角的添加按钮。</p>
+            <button class="button button-primary" id="emptyAddButton" type="button">添加媒体</button>
+          </div>
+        </div>
+
+        <header class="topbar">
+          <a class="brand" href="./" aria-label="AI Gallery 首页">
+            <span class="brand-mark">AG</span>
+            <span class="brand-copy"><strong>AI Gallery</strong><small>FULLSCREEN MEDIA ROOM</small></span>
+          </a>
+          <div class="top-actions">
+            <span class="counter" id="counter">01 / 03</span>
+            <button class="icon-button" id="addButton" type="button" title="添加图片或视频" aria-label="添加图片或视频">＋</button>
+            <input id="fileInput" type="file" accept="image/*,video/*" multiple hidden />
+            <button class="icon-button" id="fullscreenButton" type="button" title="全屏" aria-label="全屏">⛶</button>
+          </div>
+        </header>
+
+        <div class="stage-hint" id="stageHint">← → 切换　·　空格播放/暂停　·　F 全屏</div>
+
+        <div class="center-control" id="centerControl" hidden>
+          <button class="play-button" id="centerPlay" type="button" aria-label="播放">▶</button>
+        </div>
+
+        <footer class="bottombar">
+          <div class="meta">
+            <span class="eyebrow" id="mediaType">IMAGE / 01</span>
+            <h1 id="mediaTitle">Midnight Ridge</h1>
+            <p id="mediaDescription">A quiet horizon, saved for later.</p>
+          </div>
+          <div class="controls" aria-label="播放控制">
+            <button class="control-button" id="previousButton" type="button" title="上一项" aria-label="上一项">‹</button>
+            <button class="control-button control-play" id="playButton" type="button" title="播放或暂停" aria-label="播放或暂停">▶</button>
+            <button class="control-button" id="nextButton" type="button" title="下一项" aria-label="下一项">›</button>
+            <div class="progress-wrap">
+              <input id="progress" type="range" min="0" max="1000" value="0" step="1" aria-label="媒体进度" />
+              <span id="timeLabel">00:00</span>
+            </div>
+            <button class="control-button" id="muteButton" type="button" title="静音" aria-label="静音">◖</button>
+            <input class="volume" id="volume" type="range" min="0" max="1" value="0.8" step="0.05" aria-label="音量" />
+            <button class="control-button" id="fitButton" type="button" title="切换适应方式" aria-label="切换适应方式">◫</button>
+            <button class="control-button" id="loopButton" type="button" title="循环播放" aria-label="循环播放" aria-pressed="false">↻</button>
+          </div>
+        </footer>
+
+        <aside class="thumbnail-dock" aria-label="媒体缩略图列表">
+          <button class="dock-arrow" id="thumbPrevious" type="button" aria-label="向左滚动缩略图">‹</button>
+          <div class="thumbnails" id="thumbnails"></div>
+          <button class="dock-arrow" id="thumbNext" type="button" aria-label="向右滚动缩略图">›</button>
+        </aside>
+
+        <div class="drop-overlay" id="dropOverlay" hidden>
+          <div class="drop-card"><span>✦</span><strong>松开即可加入</strong><small>支持 JPG、PNG、GIF、WEBP、MP4、WEBM</small></div>
+        </div>
+      </section>
+    </main>
+    <noscript>此页面需要启用 JavaScript 才能展示图片和视频。</noscript>
+    <script src="script.js" defer></script>
+  </body>
+</html>
