@@ -76,6 +76,7 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 12px; heigh
 .stage-hint { position: absolute; top: 92px; left: 50%; transform: translateX(-50%); color: rgba(240,245,250,.32); white-space: nowrap; transition: opacity .5s; pointer-events: none; }
 .stage.hint-hidden .stage-hint { opacity: 0; }
 .center-control { position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; pointer-events: none; }
+.center-control[hidden], .empty-state[hidden] { display: none; }
 .play-button { width: 74px; height: 74px; border: 1px solid rgba(255,255,255,.5); border-radius: 50%; color: var(--text); background: rgba(6,8,14,.38); backdrop-filter: blur(12px); font-size: 1.35rem; cursor: pointer; pointer-events: auto; transition: transform .2s, background .2s; }
 .play-button:hover { background: rgba(185,245,208,.2); transform: scale(1.06); }
 .empty-state { display: grid; place-items: center; gap: 8px; max-width: 340px; text-align: center; color: var(--muted); }
