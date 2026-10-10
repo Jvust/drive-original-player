@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "type": "image",
+      "src": "https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=2400&q=90",
+      "title": "Midnight Ridge",
+      "description": "A quiet horizon, saved for later."
+    },
+    {
+      "type": "image",
+      "src": "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=2400&q=90",
+      "title": "Open Road",
+      "description": "The long way home is still a good way."
+    },
+    {
+      "type": "video",
+      "src": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+      "poster": "https://images.unsplash.com/photo-1497250681960-ef046c08a56e?auto=format&fit=crop&w=1600&q=85",
+      "title": "A Small Motion",
+      "description": "A short video, ready for fullscreen playback."
+    }
+  ]
+}
