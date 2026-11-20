@@ -78,6 +78,10 @@ function parseDriveState() {
 }
 
 async function getBridgeAccessToken() {
+  if (typeof window.hoshiNativeDriveToken === "function") {
+    try { return await window.hoshiNativeDriveToken(); }
+    catch (error) { console.warn("原生 Drive 令牌获取失败:", error); }
+  }
   const session = localStorage.getItem(SESSION_KEY);
   if (!session) return null;
   try {
@@ -93,7 +97,13 @@ async function getBridgeAccessToken() {
   } catch (error) { console.error("获取 Access Token 失败:", error); return null; }
 }
 
-function authorizeDrive() { window.location.href = OAUTH_BRIDGE + "/auth"; }
+// Native loopback+PKCE owns the redirect, so the browser can never strand the app without a token.
+// Only the plain browser build still navigates to the Worker.
+function authorizeDrive() {
+  const host = window.AndroidHost;
+  if (host && typeof host.authorizeDrive === "function") { host.authorizeDrive(); return; }
+  window.location.href = OAUTH_BRIDGE + "/auth";
+}
 
 async function initServiceWorker() {
   await Promise.all([window.DriveWorkerClient.ready(), window.DriveMediaIndex.ready()]);
@@ -119,13 +129,10 @@ function fileResourceKey(fileId) { return resourceKeys && resourceKeys[fileId] ?
 
 async function fetchFileMetadata(fileId) {
   const fields = ["id","name","mimeType","size","thumbnailLink","capabilities","imageMediaMetadata","videoMediaMetadata","parents","driveId","resourceKey"].join(",");
-  const url = "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?supportsAllDrives=true&fields=" + encodeURIComponent(fields);
-  const headers = { "Authorization": "Bearer " + currentAccessToken };
   const key = fileResourceKey(fileId);
-  if (key) headers["X-Goog-Drive-Resource-Keys"] = fileId + "/" + key;
-  const response = await fetch(url, { headers, cache: "no-store" });
-  if (!response.ok) throw new Error("读取图片信息失败：HTTP " + response.status);
-  const file = await response.json();
+  const withFields = "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) +
+    "?supportsAllDrives=true&fields=" + encodeURIComponent(fields);
+  const file = await driveJson(withFields);
   file.resourceKey = file.resourceKey || key || null;
   return file;
 }
@@ -198,24 +205,7 @@ async function fetchGalleryDriveMetadata(fileId) {
 
   const key = fileResourceKey(fileId);
 
-  if (key) {
-    headers["X-Goog-Drive-Resource-Keys"] =
-      fileId + "/" + key;
-  }
-
-  const response = await fetch(url, {
-    headers,
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      "读取 Google Drive 文件夹信息失败：HTTP " +
-      response.status
-    );
-  }
-
-  const file = await response.json();
+  const file = await driveJson(url);
 
   file.resourceKey =
     file.resourceKey ||
@@ -227,7 +217,7 @@ async function fetchGalleryDriveMetadata(fileId) {
 
 async function findGalleryRootFolder(openedFile) {
   const parents =
-    Array.isArray(openedFile.parents)
+    Array.isArray(openedFile?.parents)
       ? openedFile.parents
       : [];
 
@@ -271,7 +261,103 @@ async function findGalleryRootFolder(openedFile) {
   return matched || firstParent;
 }
 
+/**
+ * Drive JSON call that prefers the native HTTP stack when running inside the APK. The WebView's own
+ * fetch is subject to CORS and to whatever the device network does to googleapis.com, while the
+ * native bridge returns the raw status and body — which is also what the error messages surface so a
+ * failure can be diagnosed instead of guessed at.
+ */
+async function driveJson(url, allowFieldRetry = true) {
+  let body = null, status = 0, error = null;
+  if (window.AndroidHost && typeof window.AndroidHost.httpRequest === "function") {
+    const raw = window.AndroidHost.httpRequest(url, "GET",
+      JSON.stringify({ Authorization: "Bearer " + currentAccessToken }), "");
+    const result = JSON.parse(raw);
+    status = result.status || 0;
+    body = result.body || result.error || "";
+    if (!result.ok) error = "HTTP " + status + " " + String(body).slice(0, 200);
+  } else {
+    const response = await fetch(url, { headers: { Authorization: "Bearer " + currentAccessToken }, cache: "no-store" });
+    status = response.status;
+    body = await response.text();
+    if (!response.ok) error = "HTTP " + status + " " + String(body).slice(0, 200);
+  }
+  if (!error) return JSON.parse(body || "{}");
+  // Some networks deliver the parenthesised `fields` selection truncated, which Google rejects with
+  // "Invalid field selection". Retry once without the parameter instead of failing the whole page.
+  if (allowFieldRetry && status === 400 && /field selection/i.test(String(body)) && /[?&]fields=/.test(url)) {
+    const stripped = new URL(url);
+    stripped.searchParams.delete("fields");
+    return driveJson(stripped.toString(), false);
+  }
+  throw new Error(error);
+}
+
+/** Files this app uploaded, recorded natively at upload time. */
+function localIndexEntries() {
+  try {
+    const bridge = window.AndroidHost;
+    if (!bridge || typeof bridge.driveUploadIndex !== "function") return [];
+    const raw = bridge.driveUploadIndex();
+    const list = JSON.parse(raw || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (_) { return []; }
+}
+
+function localIndexAsFiles() {
+  return localIndexEntries().map(entry => ({
+    id: entry.fileId || entry.id,
+    name: entry.name || "未命名",
+    mimeType: entry.mimeType || "application/octet-stream",
+    size: entry.size || "0",
+    parents: entry.folderId ? [entry.folderId] : [],
+    __local: true
+  })).filter(file => !!file.id);
+}
+
+async function findGalleryRootFolderByName() {
+  const name = escapeDriveQueryValue(GALLERY_ROOT_FOLDER_NAME);
+  // The `fields` parameter is deliberately omitted: on some networks the parenthesised selection
+  // arrives at Google truncated ("Invalid field selection files", HTTP 400). Full metadata is a bit
+  // larger but reliable, and the folder list is filtered locally anyway.
+  const attempts = [
+    "https://www.googleapis.com/drive/v3/files?q=" +
+      encodeURIComponent("name = '" + name + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false") +
+      "&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true",
+    "https://www.googleapis.com/drive/v3/files?q=" +
+      encodeURIComponent("mimeType = 'application/vnd.google-apps.folder' and trashed = false") +
+      "&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true",
+    "https://www.googleapis.com/drive/v3/files?pageSize=200"
+  ];
+  let lastError = null, seen = 0;
+  for (let i = 0; i < attempts.length; i += 1) {
+    let data;
+    try { data = await driveJson(attempts[i]); }
+    catch (error) { lastError = error; continue; }
+    let list = Array.isArray(data.files) ? data.files : null;
+    // A proxy can answer a list request with a single file object; accept both shapes.
+    if (!list && data && data.id) list = [data];
+    if (!list) { lastError = new Error("查询返回的结构无法识别（第 " + (i + 1) + " 次）"); continue; }
+    seen = Math.max(seen, list.length);
+    const folders = list.filter(file => isDriveFolder(file) && file.name === GALLERY_ROOT_FOLDER_NAME);
+    if (!folders.length) continue;
+    const cachedRoot = window.DriveMediaIndex?.loadSnapshot()?.rootFolder;
+    const folder = folders.find(item => item.id === cachedRoot?.id) || folders[0];
+    folder.resourceKey = folder.resourceKey || null;
+    return folder;
+  }
+  const localFallback = localIndexAsFiles();
+  if (localFallback.length) {
+    return { id: "__local__", name: GALLERY_ROOT_FOLDER_NAME, mimeType: "application/vnd.google-apps.folder", __local: true };
+  }
+  if (lastError) throw lastError;
+  if (!seen) throw new Error("Drive 返回 0 个文件夹（该账号对本次授权范围没有可见文件夹）");
+  throw new Error("Drive 返回 " + seen + " 个条目，但没有名为「" + GALLERY_ROOT_FOLDER_NAME + "」的文件夹");
+}
+
 async function listGalleryTreeChildren(folderFile) {
+  // Local index fallback: Drive's list endpoint cannot be trusted on this network.
+  if (folderFile && folderFile.__local) return localIndexAsFiles();
   const allItems = [];
   let pageToken = null;
 
@@ -327,30 +413,11 @@ async function listGalleryTreeChildren(folderFile) {
       );
     }
 
-    const response =
-      await fetch(
-        "https://www.googleapis.com/drive/v3/files?" +
-          params.toString(),
-        {
-          headers: {
-            "Authorization":
-              "Bearer " + currentAccessToken
-          },
-          cache: "no-store"
-        }
-      );
-
-    if (!response.ok) {
-      throw new Error(
-        "读取文件夹内容失败：" +
-        folderFile.name +
-        " · HTTP " +
-        response.status
-      );
-    }
-
     const data =
-      await response.json();
+      await driveJson(
+        "https://www.googleapis.com/drive/v3/files?" +
+          params.toString()
+      );
 
     for (const file of data.files || []) {
       file.resourceKey =
@@ -2076,7 +2143,7 @@ function preloadNeighbors(
    * 省流量模式：
    * 仍只拉取当前浏览方向的下一张。
    */
-  if (saveData) {
+  if (saveData && !isViewerFullscreen()) {
     preloadOriginalAt(
       index + direction
     );
@@ -2090,7 +2157,7 @@ function preloadNeighbors(
    */
   const maxAhead =
     Math.min(
-      5,
+      isViewerFullscreen() ? 3 : 5,
       galleryFiles.length - 1
     );
 
@@ -2714,6 +2781,7 @@ function syncViewerFullscreenState() {
 
 function handleViewerFullscreenChange() {
   syncViewerFullscreenState();
+  if (isViewerFullscreen()) preloadNeighbors(currentIndex, lastNavigationDirection);
 
   if (
     gallerySlideshowActive &&
@@ -3118,6 +3186,7 @@ viewer.addEventListener("touchstart", showViewerUi, { passive: true });
 viewer.addEventListener("wheel", showViewerUi, { passive: true });
 
 document.addEventListener("keydown", event => {
+  if (event.defaultPrevented || document.querySelector("dialog[open]") || event.target?.closest?.("input, textarea, select, [contenteditable], dialog")) return;
   if (!document.getElementById("viewer").classList.contains("open")) return;
 
   showViewerUi();
@@ -3232,25 +3301,55 @@ window.addEventListener("load", async () => {
       }
     }
 
-    if (!driveIds.length) {
-      setStatus("等待 Google Drive");
-      document.getElementById("welcomeText").innerHTML = "请回到 Google Drive，单选文件夹内任意一张图片后使用<br>打开方式 → Drive Original Player。";
-      return;
-    }
-
     setStatus("正在授权"); currentAccessToken = await getBridgeAccessToken();
-    if (!currentAccessToken) { setStatus("需要首次授权"); document.getElementById("welcomeText").textContent = "当前浏览器还没有长期授权。"; document.getElementById("authBtn").style.display = "inline-block"; return; }
+    if (!currentAccessToken) { setStatus("需要首次授权"); document.getElementById("welcomeText").textContent = "连接 Google Drive 后会自动扫描「" + GALLERY_ROOT_FOLDER_NAME + "」文件夹。"; document.getElementById("authBtn").style.display = "inline-block"; return; }
     await sendTokenToWorker(currentAccessToken);
     setStatus("正在定位 " + GALLERY_ROOT_FOLDER_NAME);
 
-    let openedFile =
-      cachedOpenedFile ||
-      mediaIndex?.getFile(cachedSnapshot, driveIds[0]) ||
-      await fetchFileMetadata(
-        driveIds[0]
+    let openedFile = null;
+    const openedFromDrive = driveIds.length > 0;
+    if (openedFromDrive) {
+      openedFile =
+        cachedOpenedFile ||
+        mediaIndex?.getFile(cachedSnapshot, driveIds[0]) ||
+        await fetchFileMetadata(driveIds[0]);
+    } else {
+      try {
+        galleryRootFolder = await findGalleryRootFolderByName();
+      } catch (error) {
+        setStatus("查询 Drive 失败");
+        showError("搜索 Drive 文件夹失败：" + (error && error.message ? error.message : error) +
+          "。若状态是 403，请在 Google Cloud Console 为该项目启用 Drive API；若是 401，请重新点“连接 Google Drive”。");
+        return;
+      }
+      if (!galleryRootFolder) {
+        setStatus("未找到文件夹");
+        showError("在当前 Google Drive 账号可访问的文件中找不到「" + GALLERY_ROOT_FOLDER_NAME +
+          "」文件夹。请确认文件夹名称及账号权限，然后点“刷新目录”重试。\n\n" +
+          "若你已经能看到该文件夹：星映只申请了 drive.file 权限，只能看到本应用创建或打开过的文件；" +
+          "请用星映的“保存到 Drive”往该文件夹里存一个文件后再刷新。");
+        return;
+      }
+      cachedSnapshot = mediaIndex?.findSnapshotForRoot(galleryRootFolder.id) || null;
+      setStatus("正在扫描「" + GALLERY_ROOT_FOLDER_NAME + "」文件夹");
+      galleryTreeRoot = await buildGalleryFolderTree(
+        galleryRootFolder,
+        cachedSnapshot?.tree && cachedSnapshot.tree.file?.id === galleryRootFolder.id
+          ? cachedSnapshot.tree : null,
+        null
       );
+      galleryFiles = flattenImagesFromTree(galleryTreeRoot).filter(isImageFile);
+      openedFile = galleryFiles[0] || null;
+      if (!openedFile) {
+        renderGallery();
+        setStatus("「" + GALLERY_ROOT_FOLDER_NAME + "」中没有图片");
+        return;
+      }
+      driveIds = [openedFile.id];
+      resourceKeys = openedFile.resourceKey ? { [openedFile.id]: openedFile.resourceKey } : {};
+    }
 
-
+    if (openedFromDrive) {
     try {
       if (
         mediaIndex &&
@@ -3333,6 +3432,7 @@ window.addEventListener("load", async () => {
       galleryTreeRoot = null;
       galleryRootFolder = null;
       galleryFiles = [openedFile];
+    }
     }
 
     // The link can carry a video as a library seed before the first scan

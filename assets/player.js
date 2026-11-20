@@ -116,7 +116,10 @@ function captureOAuthSession() {
 
 
 async function getBridgeAccessToken() {
-
+  if (typeof window.hoshiNativeDriveToken === 'function') {
+    try { return await window.hoshiNativeDriveToken(); }
+    catch (error) { console.warn('原生 Drive 令牌获取失败：', error); }
+  }
 
   const session =
     localStorage.getItem(
@@ -1050,6 +1053,34 @@ async function cycleSharpenMode() {
   await setQualityModeFromUi(
     order[(at + 1) % order.length]
   );
+}
+
+function setPlaybackRateFromUi(value) {
+  const player = document.getElementById("player");
+  const rate = Number(value);
+  if (!player || !Number.isFinite(rate)) return;
+  player.playbackRate = Math.max(0.5, Math.min(2, rate));
+  player.defaultPlaybackRate = player.playbackRate;
+  const select = document.getElementById("playbackRateSelect");
+  if (select) select.value = String(player.playbackRate);
+  setStatus("播放速度 " + player.playbackRate.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + "×");
+}
+
+function initPlaybackRateControl() {
+  const player = document.getElementById("player");
+  const select = document.getElementById("playbackRateSelect");
+  if (!player || !select || player.dataset.rateControlReady === "1") return;
+  player.dataset.rateControlReady = "1";
+  try {
+    const saved = Number(localStorage.getItem("hoshi-video-playback-rate"));
+    if (Number.isFinite(saved) && saved >= 0.5 && saved <= 2) player.playbackRate = saved;
+  } catch (_) {}
+  select.value = String(player.playbackRate || 1);
+  player.addEventListener("ratechange", () => {
+    const rate = Number(player.playbackRate) || 1;
+    select.value = [...select.options].some(option => Number(option.value) === rate) ? String(rate) : "1";
+    try { localStorage.setItem("hoshi-video-playback-rate", String(rate)); } catch (_) {}
+  });
 }
 
 function gpuTogglePlay() {
@@ -4141,22 +4172,9 @@ async function initServiceWorker() {
           return;
         }
 
-        if (
-          videoPlaylist.length >
-            1
-        ) {
-          const next =
-            currentVideoIndex + 1;
-
-          if (
-            next <
-            videoPlaylist.length
-          ) {
-            await switchVideoByIndex(
-              next,
-              true
-            );
-          }
+        if (videoPlaylist.length > 1) {
+          const next = (currentVideoIndex + 1) % videoPlaylist.length;
+          await switchVideoByIndex(next, true);
         }
       }
     );
@@ -4187,6 +4205,7 @@ async function initServiceWorker() {
       document.getElementById("player");
 
     initGpuMediaControls();
+    initPlaybackRateControl();
     initTimelinePreview();
     initFullscreenAutoHide();
     startGpuHealthMonitor();
@@ -6058,9 +6077,21 @@ async function initServiceWorker() {
      */
     if (!currentFileId) {
 
+      // Android has no "right click → open with", so the desktop copy left users on a dead end.
+      const onAndroid = !!window.AndroidHost;
+
       document.getElementById(
         "welcome"
-      ).innerHTML = `
+      ).innerHTML = onAndroid ? `
+        <h1>Drive 已连接</h1>
+        <p>
+          授权完成，登录凭证已保存在本机，以后不用再授权。
+          <br><br>
+          去「四站长廊」挑一个条目，点「保存到 Drive」就能用原画质上传；
+          云端文件名就是作品标题。
+        </p>
+        <p><a href="sources/index.html?site=all">进入四站长廊 →</a></p>
+      ` : `
         <h1>长期授权成功</h1>
         <p>
           以后打开视频无需再次手动授权。
@@ -6113,6 +6144,12 @@ async function initServiceWorker() {
    */
 
 function authorizeDrive() {
+
+  const host = window.AndroidHost;
+  if (host && typeof host.authorizeDrive === "function") {
+    host.authorizeDrive();
+    return;
+  }
 
   window.location.href =
     OAUTH_BRIDGE + "/auth";
@@ -6346,30 +6383,46 @@ function authorizeDrive() {
     }
   }
 
-// WebGPU 模式下补齐最常用的键盘控制。
+// 全模式通用快捷键：空格播放/暂停、方向键跳转、M 静音、F 全屏、J/L 跳转 10 秒。
 document.addEventListener("keydown", event => {
-  if (!gpuActive) return;
-
-  const tag =
-    event.target && event.target.tagName
-      ? event.target.tagName.toLowerCase()
-      : "";
-
-  if (tag === "input" || tag === "button") return;
-
   const player = document.getElementById("player");
-  if (!player) return;
+  const wrap = document.getElementById("playerWrap");
+  if (!player || !wrap || getComputedStyle(wrap).display === "none") return;
 
+  const target = event.target;
+  const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+  if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) return;
+  if (event.defaultPrevented || document.querySelector("dialog[open]") || event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
+
+  const key = event.key.toLowerCase();
+  const seek = seconds => {
+    const end = Number.isFinite(player.duration) ? player.duration : Infinity;
+    player.currentTime = Math.max(0, Math.min(end, player.currentTime + seconds));
+  };
+
+  if (event.code === "Space" && target?.closest?.("button, a[href], summary")) return;
   if (event.code === "Space") {
     event.preventDefault();
     gpuTogglePlay();
   } else if (event.key === "ArrowLeft") {
-    player.currentTime = Math.max(0, player.currentTime - 5);
+    event.preventDefault();
+    seek(-5);
   } else if (event.key === "ArrowRight") {
-    player.currentTime = Math.min(
-      Number.isFinite(player.duration) ? player.duration : Infinity,
-      player.currentTime + 5
-    );
+    event.preventDefault();
+    seek(5);
+  } else if (key === "j") {
+    seek(-10);
+  } else if (key === "l") {
+    seek(10);
+  } else if (key === "m") {
+    player.muted = !player.muted;
+    syncGpuMediaControls();
+  } else if (key === "f") {
+    toggleWebFullscreen();
+  } else if (key === "n") {
+    playNextVideo();
+  } else if (key === "p") {
+    playPreviousVideo();
   }
 });
 
