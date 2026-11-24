@@ -764,3 +764,34 @@
       white-space: pre-wrap;
     }
 
+
+
+/* 播放室操作增强：倍速、缓冲状态与快捷键提示。 */
+.playback-rate-control { border-color: rgba(243,180,207,.2); }
+#info { display: grid; gap: 7px; }
+#filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  margin-top: 3px;
+  color: #8f98b2;
+  font-size: 11px;
+  letter-spacing: .01em;
+}
+.player-shortcuts kbd {
+  min-width: 21px;
+  padding: 1px 5px;
+  border: 1px solid rgba(197,201,240,.2);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(21,27,44,.78);
+  color: #d8d9ec;
+  font: 600 10px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+  text-align: center;
+}
+@media (max-width: 700px) {
+  .player-shortcuts { gap: 4px 6px; font-size: 10px; }
+  .playback-rate-control { flex: 1 1 130px; justify-content: space-between; }
+}

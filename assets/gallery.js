@@ -14,7 +14,15 @@ let galleryBgPending = false;
 let galleryTreeRoot = null;
 let galleryRootFolder = null;
 const expandedGalleryFolders = new Set();
-const GALLERY_ROOT_FOLDER_NAME = "1433223";
+// 收藏目录优先取「用户自选」→ 专用版固定目录（app-flavor.json）→ 默认 1433223。
+const ROOT_PREF = (() => {
+  try {
+    if (window.HoshiRootPref) return window.HoshiRootPref.current();
+    return JSON.parse(window.AndroidHost?.getFlavor?.() || "{}");
+  } catch (_) { return {}; }
+})();
+const GALLERY_ROOT_FOLDER_NAME = ROOT_PREF.rootFolderName || ROOT_PREF.name || "1433223";
+const GALLERY_ROOT_FOLDER_ID = ROOT_PREF.rootFolderId || ROOT_PREF.id || "";
 let currentIndex = 0;
 let gallerySlideshowTimer = null;
 let gallerySlideshowActive = false;
@@ -32,6 +40,9 @@ let zoomScale = 1;
 let panX = 0;
 let panY = 0;
 let tokenRefreshRunning = false;
+// Set when a directory-tree read fails and we fall back to showing only the already-opened file.
+// The gallery must not present that single image as a successfully scanned library.
+let treeScanFailed = false;
 
 let touchStartX = 0;
 let touchStartY = 0;
@@ -78,9 +89,9 @@ function parseDriveState() {
 }
 
 async function getBridgeAccessToken() {
-  if (typeof window.hoshiNativeDriveToken === "function") {
-    try { return await window.hoshiNativeDriveToken(); }
-    catch (error) { console.warn("原生 Drive 令牌获取失败:", error); }
+  if (window.AndroidHost) {
+    if (typeof window.hoshiNativeDriveToken !== "function") throw new Error("Android Drive 授权桥不可用");
+    return window.hoshiNativeDriveToken(true);
   }
   const session = localStorage.getItem(SESSION_KEY);
   if (!session) return null;
@@ -101,7 +112,8 @@ async function getBridgeAccessToken() {
 // Only the plain browser build still navigates to the Worker.
 function authorizeDrive() {
   const host = window.AndroidHost;
-  if (host && typeof host.authorizeDrive === "function") { host.authorizeDrive(); return; }
+  if (typeof host?.reauthorizeDrive === "function") { host.reauthorizeDrive(); return; }
+  if (typeof host?.authorizeDrive === "function") { host.authorizeDrive(); return; }
   window.location.href = OAUTH_BRIDGE + "/auth";
 }
 
@@ -111,7 +123,14 @@ async function initServiceWorker() {
 }
 
 async function sendTokenToWorker(token) {
-  if (token) await window.DriveWorkerClient.send({ type: "SET_TOKEN", token });
+  if (!token) return;
+  try {
+    await window.DriveWorkerClient.send({ type: "SET_TOKEN", token });
+  } catch (error) {
+    // The media worker is only needed for playback, not for listing folders/images. A failed or
+    // slow worker must not abort gallery discovery.
+    console.warn("媒体服务授权未确认（不影响图库目录）：", error);
+  }
 }
 
 async function refreshWorkerAccessToken() {
@@ -119,9 +138,11 @@ async function refreshWorkerAccessToken() {
   tokenRefreshRunning = true;
   try {
     const token = await getBridgeAccessToken();
-    if (!token) return;
+    if (!token || window.DriveNavigation.isRefreshing()) return;
     currentAccessToken = token;
     await sendTokenToWorker(token);
+  } catch (_) {
+    // The startup and explicit refresh flows surface the actionable authorization error.
   } finally { tokenRefreshRunning = false; }
 }
 
@@ -132,7 +153,7 @@ async function fetchFileMetadata(fileId) {
   const key = fileResourceKey(fileId);
   const withFields = "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) +
     "?supportsAllDrives=true&fields=" + encodeURIComponent(fields);
-  const file = await driveJson(withFields);
+  const file = await driveJson(withFields, { fileId: fileId, resourceKey: key });
   file.resourceKey = file.resourceKey || key || null;
   return file;
 }
@@ -205,7 +226,7 @@ async function fetchGalleryDriveMetadata(fileId) {
 
   const key = fileResourceKey(fileId);
 
-  const file = await driveJson(url);
+  const file = await driveJson(url, { fileId: fileId, resourceKey: key });
 
   file.resourceKey =
     file.resourceKey ||
@@ -224,8 +245,6 @@ async function findGalleryRootFolder(openedFile) {
   if (!parents.length) return null;
 
   let parentId = parents[0];
-  let firstParent = null;
-  let matched = null;
   let guard = 0;
 
   while (parentId && guard < 80) {
@@ -234,16 +253,12 @@ async function findGalleryRootFolder(openedFile) {
         parentId
       );
 
-    if (!firstParent) {
-      firstParent = folder;
+    // Remember the key returned for this folder so the next parent lookup can address it.
+    if (folder && folder.id && folder.resourceKey) {
+      resourceKeys[folder.id] = folder.resourceKey;
     }
 
-    if (
-      isDriveFolder(folder) &&
-      folder.name === GALLERY_ROOT_FOLDER_NAME
-    ) {
-      matched = folder;
-    }
+    if (isGalleryRoot(folder)) return folder;
 
     const folderParents =
       Array.isArray(folder.parents)
@@ -258,7 +273,7 @@ async function findGalleryRootFolder(openedFile) {
     guard += 1;
   }
 
-  return matched || firstParent;
+  return null;
 }
 
 /**
@@ -267,30 +282,60 @@ async function findGalleryRootFolder(openedFile) {
  * native bridge returns the raw status and body — which is also what the error messages surface so a
  * failure can be diagnosed instead of guessed at.
  */
-async function driveJson(url, allowFieldRetry = true) {
+async function driveJson(url, options = {}) {
+  // Accept the legacy boolean second argument (allowFieldRetry) for callers we have not migrated.
+  const opts = typeof options === "boolean" ? { allowFieldRetry: options } : (options || {});
+  const allowFieldRetry = opts.allowFieldRetry !== false;
+  // Files in a shared drive may only be addressable with their resource key. Build the official
+  // X-Goog-Drive-Resource-Keys header from the id being requested and its known key. Callers pass
+  // the fileId for metadata requests; list requests (driveFilePages) pass none.
+  let extraHeaders = {};
+  if (opts.fileId) {
+    const key = opts.resourceKey || fileResourceKey(opts.fileId);
+    if (key) extraHeaders["X-Goog-Drive-Resource-Keys"] = opts.fileId + "/" + key;
+  }
   let body = null, status = 0, error = null;
+  const authHeaders = Object.assign({ Authorization: "Bearer " + currentAccessToken }, extraHeaders);
+  // Java's DNS resolver sits on the VPN/system resolver and does fail on some hotspot/VPN setups
+  // while the WebView's own networking still works. Treat a transport-level failure (status 0 or a
+  // resolver message) as "try the other stack" instead of reporting an empty Drive.
+  const isTransportFailure = (s, b) => s === 0 ||
+    /Unable to resolve host|Failed to connect|Connection reset|Network is unreachable|timed out|ECONN|ENETUNREACH/i.test(String(b || ""));
+  let usedNative = false;
   if (window.AndroidHost && typeof window.AndroidHost.httpRequest === "function") {
-    const raw = window.AndroidHost.httpRequest(url, "GET",
-      JSON.stringify({ Authorization: "Bearer " + currentAccessToken }), "");
-    const result = JSON.parse(raw);
-    status = result.status || 0;
-    body = result.body || result.error || "";
-    if (!result.ok) error = "HTTP " + status + " " + String(body).slice(0, 200);
-  } else {
-    const response = await fetch(url, { headers: { Authorization: "Bearer " + currentAccessToken }, cache: "no-store" });
+    usedNative = true;
+    try {
+      const raw = window.AndroidHost.httpRequest(url, "GET", JSON.stringify(authHeaders), "");
+      const result = JSON.parse(raw);
+      status = result.status || 0;
+      body = result.body || result.error || "";
+      if (!result.ok) error = "HTTP " + status + " " + String(body).slice(0, 200);
+    } catch (nativeError) {
+      status = 0;
+      body = String(nativeError && nativeError.message || nativeError);
+      error = "HTTP 0 " + body.slice(0, 200);
+    }
+    if (isTransportFailure(status, body)) {
+      usedNative = false;
+      body = null; status = 0; error = null;
+    }
+  }
+  if (!usedNative) {
+    const response = await fetch(url, { headers: authHeaders, cache: "no-store" });
     status = response.status;
     body = await response.text();
     if (!response.ok) error = "HTTP " + status + " " + String(body).slice(0, 200);
   }
   if (!error) return JSON.parse(body || "{}");
   // Some networks deliver the parenthesised `fields` selection truncated, which Google rejects with
-  // "Invalid field selection". Retry once without the parameter instead of failing the whole page.
+  // "Invalid field selection". Retry once without the parameter instead of failing the whole page,
+  // preserving the resource-key header so the retry addresses the same file.
   if (allowFieldRetry && status === 400 && /field selection/i.test(String(body)) && /[?&]fields=/.test(url)) {
     const stripped = new URL(url);
     stripped.searchParams.delete("fields");
-    return driveJson(stripped.toString(), false);
+    return driveJson(stripped.toString(), Object.assign({}, opts, { allowFieldRetry: false }));
   }
-  throw new Error(error);
+  throw Object.assign(new Error(error), { status });
 }
 
 /** Files this app uploaded, recorded natively at upload time. */
@@ -315,128 +360,102 @@ function localIndexAsFiles() {
   })).filter(file => !!file.id);
 }
 
-async function findGalleryRootFolderByName() {
-  const name = escapeDriveQueryValue(GALLERY_ROOT_FOLDER_NAME);
-  // The `fields` parameter is deliberately omitted: on some networks the parenthesised selection
-  // arrives at Google truncated ("Invalid field selection files", HTTP 400). Full metadata is a bit
-  // larger but reliable, and the folder list is filtered locally anyway.
-  const attempts = [
-    "https://www.googleapis.com/drive/v3/files?q=" +
-      encodeURIComponent("name = '" + name + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false") +
-      "&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true",
-    "https://www.googleapis.com/drive/v3/files?q=" +
-      encodeURIComponent("mimeType = 'application/vnd.google-apps.folder' and trashed = false") +
-      "&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true",
-    "https://www.googleapis.com/drive/v3/files?pageSize=200"
-  ];
-  let lastError = null, seen = 0;
-  for (let i = 0; i < attempts.length; i += 1) {
-    let data;
-    try { data = await driveJson(attempts[i]); }
-    catch (error) { lastError = error; continue; }
-    let list = Array.isArray(data.files) ? data.files : null;
-    // A proxy can answer a list request with a single file object; accept both shapes.
-    if (!list && data && data.id) list = [data];
-    if (!list) { lastError = new Error("查询返回的结构无法识别（第 " + (i + 1) + " 次）"); continue; }
-    seen = Math.max(seen, list.length);
-    const folders = list.filter(file => isDriveFolder(file) && file.name === GALLERY_ROOT_FOLDER_NAME);
-    if (!folders.length) continue;
-    const cachedRoot = window.DriveMediaIndex?.loadSnapshot()?.rootFolder;
-    const folder = folders.find(item => item.id === cachedRoot?.id) || folders[0];
-    folder.resourceKey = folder.resourceKey || null;
-    return folder;
+const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
+
+function isGalleryRoot(file) {
+  return isDriveFolder(file) && file.name === GALLERY_ROOT_FOLDER_NAME &&
+    typeof file.id === "string" && file.id.length > 0 && file.trashed !== true;
+}
+
+async function* driveFilePages(params, operation) {
+  const seenTokens = new Set();
+  for (;;) {
+    const data = await driveJson(DRIVE_FILES_URL + "?" + params.toString());
+    // Google can omit an empty repeated field; accept it only on a recognized list envelope.
+    const files = data?.files === undefined && data?.kind === "drive#fileList" && !data.id ? [] : data?.files;
+    if (!Array.isArray(files) || data.id || (data.kind && data.kind !== "drive#fileList") ||
+        files.some(file => typeof file?.id !== "string" || !file.id ||
+          typeof file.name !== "string" || typeof file.mimeType !== "string")) {
+      throw new Error(operation + "：Drive 未返回有效文件列表");
+    }
+    if (data.incompleteSearch === true) throw new Error(operation + "：Drive 标记搜索结果不完整");
+    const next = data.nextPageToken;
+    if (next !== undefined && next !== "" && (typeof next !== "string" || !next.trim() || seenTokens.has(next))) {
+      throw new Error(operation + "：Drive 返回无效分页令牌");
+    }
+    yield files;
+    if (!next) break;
+    seenTokens.add(next);
+    params.set("pageToken", next);
   }
-  const localFallback = localIndexAsFiles();
-  if (localFallback.length) {
-    return { id: "__local__", name: GALLERY_ROOT_FOLDER_NAME, mimeType: "application/vnd.google-apps.folder", __local: true };
+}
+
+async function findGalleryRootFolderByName(fresh = false) {
+  // A pinned folder id is authoritative: the folder may be renamed at any time, and a name search
+  // could match a different folder.
+  if (GALLERY_ROOT_FOLDER_ID) {
+    try {
+      const pinned = await fetchFileMetadata(GALLERY_ROOT_FOLDER_ID);
+      if (isDriveFolder(pinned)) return pinned;
+    } catch (error) {
+      console.warn("固定目录读取失败，回退按名称搜索：", error);
+    }
   }
-  if (lastError) throw lastError;
-  if (!seen) throw new Error("Drive 返回 0 个文件夹（该账号对本次授权范围没有可见文件夹）");
-  throw new Error("Drive 返回 " + seen + " 个条目，但没有名为「" + GALLERY_ROOT_FOLDER_NAME + "」的文件夹");
+  const query = "name = '" + escapeDriveQueryValue(GALLERY_ROOT_FOLDER_NAME) +
+    "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+  const cachedId = fresh ? null : window.DriveMediaIndex?.loadSnapshot()?.rootFolder?.id;
+  // The app may already have confirmed a root folder during upload. Prefer that exact id so the
+  // gallery opens the same folder the app saves into, even when several folders share the name.
+  let confirmedId = "";
+  try {
+    if (typeof window.AndroidHost?.getGalleryRootId === "function") {
+      confirmedId = window.AndroidHost.getGalleryRootId() || "";
+    }
+  } catch (_) { /* bridge unavailable in the plain browser build */ }
+  const preferredId = confirmedId || cachedId || GALLERY_ROOT_FOLDER_ID;
+  for (const corpora of ["user", "allDrives"]) {
+    const params = new URLSearchParams({
+      q: query, corpora, spaces: "drive", pageSize: "100",
+      supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+      fields: "kind,nextPageToken,incompleteSearch,files(id,name,mimeType,trashed,parents,driveId,resourceKey)"
+    });
+    let first = null;
+    for await (const files of driveFilePages(params, "搜索文件夹")) {
+      for (const file of files) {
+        if (!isGalleryRoot(file)) continue;
+        if (!first) first = file;
+        if (file.id === preferredId) first = file;
+      }
+    }
+    if (first) {
+      // Persist the resolved id so future uploads and gallery loads share one folder.
+      if (typeof window.AndroidHost?.setGalleryRootId === "function" && first.id) {
+        try { window.AndroidHost.setGalleryRootId(first.id); } catch (_) {}
+      }
+      return first;
+    }
+  }
+  return null;
 }
 
 async function listGalleryTreeChildren(folderFile) {
-  // Local index fallback: Drive's list endpoint cannot be trusted on this network.
-  if (folderFile && folderFile.__local) return localIndexAsFiles();
+  if (folderFile.__local) return localIndexAsFiles();
   const allItems = [];
-  let pageToken = null;
-
-  do {
-    const params =
-      new URLSearchParams({
-        q:
-          "'" +
-          escapeDriveQueryValue(folderFile.id) +
-          "' in parents and trashed = false",
-        spaces: "drive",
-        pageSize: "1000",
-        supportsAllDrives: "true",
-        includeItemsFromAllDrives: "true",
-        fields:
-          "nextPageToken,files(" +
-          [
-            "id",
-            "name",
-            "mimeType",
-            "size",
-            "thumbnailLink",
-            "capabilities",
-            "imageMediaMetadata",
-            "videoMediaMetadata",
-            "resourceKey",
-            "parents",
-            "driveId"
-          ].join(",") +
-          ")"
-      });
-
-    if (folderFile.driveId) {
-      params.set(
-        "corpora",
-        "drive"
-      );
-      params.set(
-        "driveId",
-        folderFile.driveId
-      );
-    } else {
-      params.set(
-        "corpora",
-        "user"
-      );
+  const params = new URLSearchParams({
+    q: "'" + escapeDriveQueryValue(folderFile.id) + "' in parents and trashed = false",
+    spaces: "drive", pageSize: "1000", supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+    corpora: folderFile.driveId ? "drive" : "user",
+    fields: "kind,nextPageToken,incompleteSearch,files(id,name,mimeType,size,thumbnailLink,capabilities," +
+      "imageMediaMetadata,videoMediaMetadata,resourceKey,parents,driveId,trashed)"
+  });
+  if (folderFile.driveId) params.set("driveId", folderFile.driveId);
+  for await (const files of driveFilePages(params, "读取文件夹「" + folderFile.name + "」")) {
+    for (const file of files) {
+      if (file.trashed === true) continue;
+      file.resourceKey = file.resourceKey || fileResourceKey(file.id) || null;
+      if (isDriveFolder(file) || isImageFile(file) || isVideoFile(file)) allItems.push(file);
     }
-
-    if (pageToken) {
-      params.set(
-        "pageToken",
-        pageToken
-      );
-    }
-
-    const data =
-      await driveJson(
-        "https://www.googleapis.com/drive/v3/files?" +
-          params.toString()
-      );
-
-    for (const file of data.files || []) {
-      file.resourceKey =
-        file.resourceKey ||
-        fileResourceKey(file.id) ||
-        null;
-
-      if (
-        isDriveFolder(file) ||
-        isImageFile(file) ||
-        isVideoFile(file)
-      ) {
-        allItems.push(file);
-      }
-    }
-
-    pageToken =
-      data.nextPageToken || null;
-  } while (pageToken);
+  }
 
   const collator =
     new Intl.Collator(
@@ -470,7 +489,8 @@ async function listGalleryTreeChildren(folderFile) {
 async function buildGalleryFolderTree(
   rootFolder,
   existingRootNode = null,
-  sourceFile = null
+  sourceFile = null,
+  fresh = false
 ) {
   const rootNode =
     existingRootNode &&
@@ -482,8 +502,7 @@ async function buildGalleryFolderTree(
           children: []
         };
 
-  const mediaIndex =
-    window.DriveMediaIndex;
+  const mediaIndex = rootFolder.__local ? null : window.DriveMediaIndex;
 
   let scannedFolders = 0;
   const MAX_FOLDERS = 5000;
@@ -523,19 +542,22 @@ async function buildGalleryFolderTree(
     }
   }
 
+  const superseded = () => window.DriveNavigation.isRefreshing();
+  if (superseded()) return rootNode;
   collectUnscannedFolders(rootNode);
-  mediaIndex?.saveSnapshot(rootFolder, rootNode, false, sourceFile);
+  mediaIndex?.saveSnapshot(rootFolder, rootNode, false, sourceFile, fresh);
 
   while (queue.length) {
     const batch = queue.splice(0, 4);
 
-    await Promise.all(
+    const results = await Promise.allSettled(
       batch.map(async node => {
         const items =
           await listGalleryTreeChildren(
             node.file
           );
 
+        if (superseded()) return;
         node.children =
           items.map(file => ({
             file,
@@ -552,7 +574,7 @@ async function buildGalleryFolderTree(
         }
 
         scannedFolders += 1;
-        // A sibling request can fail or the user can leave before Promise.all completes.
+        // Save completed siblings, even when another directory is unavailable.
         mediaIndex?.saveSnapshot(rootFolder, rootNode, false, sourceFile);
 
         setStatus(
@@ -566,6 +588,9 @@ async function buildGalleryFolderTree(
       })
     );
 
+    if (superseded()) return rootNode;
+    const failed = results.find(result => result.status === "rejected");
+    if (failed) throw failed.reason;
     if (mediaIndex) {
       mediaIndex.saveSnapshot(
         rootFolder,
@@ -2193,7 +2218,7 @@ async function showViewerImage(
 
   currentIndex = (index + galleryFiles.length) % galleryFiles.length;
   const file = galleryFiles[currentIndex];
-  window.DriveNavigation.remember(file);
+  if (!file.__local) window.DriveNavigation.remember(file);
 
   if (!slideshowMode) {
     clearTimeout(galleryFolderSlideshowTimer);
@@ -3229,11 +3254,32 @@ document.addEventListener("keydown", event => {
   }
 });
 
+window.addEventListener("hoshi:drive-gallery-consent", () => {
+  window.DriveNavigation.refreshLibrary();
+});
+
 window.addEventListener("load", async () => {
+  treeScanFailed = false;
   try {
-    await initServiceWorker();
+    const url = new URL(location.href);
+    const fresh = url.searchParams.get("rediscover") === "1";
+    if (window.AndroidHost?.takeDriveGalleryRescan?.() === true && !fresh) {
+      await window.DriveNavigation.refreshLibrary();
+      return;
+    }
+    const discoveryComplete = () => {
+      if (!fresh) return;
+      url.searchParams.delete("rediscover");
+      url.searchParams.delete("state");
+      history.replaceState(history.state, "", url.href);
+    };
+    // Directory discovery uses the Drive API directly (native HTTP / fetch), NOT the media worker.
+    // Initialising the worker must never block the gallery: on a flaky network the controller wait
+    // can hang, which previously left the page stuck at "准备中" with no folder scan at all.
+    initServiceWorker().catch(error => console.warn("媒体服务初始化失败，图库目录仍可浏览：", error));
+    if (window.DriveNavigation.isRefreshing()) return;
     const mediaIndex = window.DriveMediaIndex;
-    const state = parseDriveState();
+    const state = fresh ? null : parseDriveState();
     let cachedSnapshot = null;
     let cachedOpenedFile = null;
 
@@ -3247,7 +3293,7 @@ window.addEventListener("load", async () => {
             driveIds[0]
           );
 
-        if (cachedSnapshot) {
+        if (cachedSnapshot && isGalleryRoot(cachedSnapshot.rootFolder)) {
           cachedOpenedFile =
             mediaIndex.getFile(cachedSnapshot, driveIds[0]);
 
@@ -3275,11 +3321,11 @@ window.addEventListener("load", async () => {
           }
         }
       }
-    } else if (mediaIndex) {
+    } else if (mediaIndex && !fresh) {
       cachedSnapshot =
         mediaIndex.loadSnapshot();
 
-      if (cachedSnapshot) {
+      if (cachedSnapshot && isGalleryRoot(cachedSnapshot.rootFolder)) {
         cachedOpenedFile =
           mediaIndex.findFirstFile(
             cachedSnapshot.tree,
@@ -3301,9 +3347,33 @@ window.addEventListener("load", async () => {
       }
     }
 
-    setStatus("正在授权"); currentAccessToken = await getBridgeAccessToken();
-    if (!currentAccessToken) { setStatus("需要首次授权"); document.getElementById("welcomeText").textContent = "连接 Google Drive 后会自动扫描「" + GALLERY_ROOT_FOLDER_NAME + "」文件夹。"; document.getElementById("authBtn").style.display = "inline-block"; return; }
+    if (window.AndroidHost?.driveNeedsScopeUpgrade?.() === true) {
+      setStatus("请重新确认 Drive 读取权限");
+      document.getElementById("welcomeText").textContent =
+        "点“连接 Google Drive”，同时允许读取已有文件及由星映保存文件，然后自动查找「" + GALLERY_ROOT_FOLDER_NAME + "」。";
+      document.getElementById("authBtn").style.display = "inline-block";
+      return;
+    }
+    setStatus("正在授权");
+    try {
+      currentAccessToken = await getBridgeAccessToken();
+    } catch (error) {
+      if (window.DriveNavigation.isRefreshing()) return;
+      setStatus("Drive 授权检查失败");
+      showError(error.message || String(error));
+      document.getElementById("authBtn").style.display = "inline-block";
+      return;
+    }
+    if (window.DriveNavigation.isRefreshing()) return;
+    if (!currentAccessToken) {
+      setStatus("请连接 Google Drive");
+      document.getElementById("welcomeText").textContent =
+        "连接 Google Drive 后会自动扫描「" + GALLERY_ROOT_FOLDER_NAME + "」文件夹。";
+      document.getElementById("authBtn").style.display = "inline-block";
+      return;
+    }
     await sendTokenToWorker(currentAccessToken);
+    if (window.DriveNavigation.isRefreshing()) return;
     setStatus("正在定位 " + GALLERY_ROOT_FOLDER_NAME);
 
     let openedFile = null;
@@ -3314,35 +3384,59 @@ window.addEventListener("load", async () => {
         mediaIndex?.getFile(cachedSnapshot, driveIds[0]) ||
         await fetchFileMetadata(driveIds[0]);
     } else {
+      let discoveryError = null;
       try {
-        galleryRootFolder = await findGalleryRootFolderByName();
+        galleryRootFolder = await findGalleryRootFolderByName(fresh);
       } catch (error) {
-        setStatus("查询 Drive 失败");
-        showError("搜索 Drive 文件夹失败：" + (error && error.message ? error.message : error) +
-          "。若状态是 403，请在 Google Cloud Console 为该项目启用 Drive API；若是 401，请重新点“连接 Google Drive”。");
-        return;
+        discoveryError = error;
       }
+      if (window.DriveNavigation.isRefreshing()) return;
       if (!galleryRootFolder) {
-        setStatus("未找到文件夹");
-        showError("在当前 Google Drive 账号可访问的文件中找不到「" + GALLERY_ROOT_FOLDER_NAME +
-          "」文件夹。请确认文件夹名称及账号权限，然后点“刷新目录”重试。\n\n" +
-          "若你已经能看到该文件夹：星映只申请了 drive.file 权限，只能看到本应用创建或打开过的文件；" +
-          "请用星映的“保存到 Drive”往该文件夹里存一个文件后再刷新。");
-        return;
+        const accessError = [401, 403].includes(discoveryError?.status);
+        // status 0 / "Failed to fetch" / a resolver message means the device network (usually a
+        // VPN or hotspot DNS) blocked the request. That is not "no such folder" and it must not be
+        // presented as a one-image local library, which reads as a broken gallery.
+        const networkError = !!discoveryError &&
+          (discoveryError.status === 0 || discoveryError.status === undefined) &&
+          /Failed to fetch|Unable to resolve host|NetworkError|Load failed|timed out|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED/i
+            .test(String(discoveryError.message || ""));
+        setStatus(networkError ? "网络不可用" :
+          accessError ? "Drive 访问受限" : discoveryError ? "查询 Drive 失败" : "未找到文件夹");
+        const detail = networkError
+          ? "无法连接 Google Drive：" + (discoveryError.message || "网络请求失败") +
+            "。请检查 VPN / 热点，恢复后点「刷新目录」重试。"
+          : discoveryError
+            ? "搜索「" + GALLERY_ROOT_FOLDER_NAME + "」失败：" + discoveryError.message
+            : "当前账号的 Drive 搜索未返回名为「" + GALLERY_ROOT_FOLDER_NAME + "」的文件夹。请确认名称及共享权限后刷新目录。";
+        if (accessError || networkError || !discoveryError) {
+          document.getElementById("authBtn").style.display = "inline-block";
+        }
+        const canShowLocal = !accessError && !networkError;
+        if (canShowLocal && localIndexAsFiles().some(isImageFile)) {
+          showError(detail + "；下面仅显示本设备记录的星映上传，不代表已找到 Drive 文件夹。");
+          galleryRootFolder = { id: "__local__", name: "本设备上传记录", mimeType: "application/vnd.google-apps.folder", __local: true };
+        } else {
+          showError(detail);
+          return;
+        }
       }
-      cachedSnapshot = mediaIndex?.findSnapshotForRoot(galleryRootFolder.id) || null;
-      setStatus("正在扫描「" + GALLERY_ROOT_FOLDER_NAME + "」文件夹");
+      cachedSnapshot = fresh || galleryRootFolder.__local ? null :
+        mediaIndex?.findSnapshotForRoot(galleryRootFolder.id) || null;
+      setStatus("正在读取「" + galleryRootFolder.name + "」");
       galleryTreeRoot = await buildGalleryFolderTree(
         galleryRootFolder,
         cachedSnapshot?.tree && cachedSnapshot.tree.file?.id === galleryRootFolder.id
           ? cachedSnapshot.tree : null,
-        null
+        null,
+        fresh
       );
+      if (window.DriveNavigation.isRefreshing()) return;
       galleryFiles = flattenImagesFromTree(galleryTreeRoot).filter(isImageFile);
       openedFile = galleryFiles[0] || null;
       if (!openedFile) {
         renderGallery();
-        setStatus("「" + GALLERY_ROOT_FOLDER_NAME + "」中没有图片");
+        if (!galleryRootFolder.__local) discoveryComplete();
+        setStatus("「" + galleryRootFolder.name + "」中没有图片");
         return;
       }
       driveIds = [openedFile.id];
@@ -3429,18 +3523,23 @@ window.addEventListener("load", async () => {
       );
 
       if (!isImageFile(openedFile)) throw treeError;
+      treeScanFailed = true;
+      showError("目录读取失败，仅显示当前图片。请检查 Drive 权限后点「刷新目录」重试：" +
+        (treeError && treeError.message ? treeError.message : String(treeError)));
       galleryTreeRoot = null;
       galleryRootFolder = null;
       galleryFiles = [openedFile];
     }
     }
 
+    if (window.DriveNavigation.isRefreshing()) return;
+
     // The link can carry a video as a library seed before the first scan
     // discovers an image. Never render that seed as an image card.
     galleryFiles = galleryFiles.filter(isImageFile);
     if (!isImageFile(openedFile)) openedFile = galleryFiles[0];
     if (!openedFile) { setStatus("当前目录没有图片"); return; }
-    window.DriveNavigation.remember(openedFile);
+    if (!openedFile.__local) window.DriveNavigation.remember(openedFile);
 
     if (
       !galleryFiles.some(
@@ -3484,7 +3583,7 @@ window.addEventListener("load", async () => {
       );
     }
 
-    const storedGalleryView = mediaIndex?.getView("gallery", galleryRootFolder?.id);
+    const storedGalleryView = fresh || galleryRootFolder?.__local ? null : mediaIndex?.getView("gallery", galleryRootFolder?.id);
     const savedGalleryView = storedGalleryView?.fileId === openedFile.id ? storedGalleryView : null;
     if (savedGalleryView) {
       expandedGalleryFolders.clear();
@@ -3511,18 +3610,28 @@ window.addEventListener("load", async () => {
       }
     });
 
-    setStatus(
-      "Original · " +
-      (
-        galleryRootFolder
-          ? galleryRootFolder.name
-          : "图片"
-      ) +
-      " · " +
-      galleryFiles.length +
-      " 张"
-    );
-  } catch (error) { console.error(error); setStatus("读取失败"); showError(error.message || String(error)); }
+    // A failed tree scan must never be reported as a successful library load.
+    if (treeScanFailed) {
+      setStatus("仅显示当前图片 · 目录读取失败");
+    } else {
+      if (!galleryRootFolder?.__local) discoveryComplete();
+      // The local fallback's folder is literally named 本设备上传记录, so prefixing it again read
+      // as "仅本设备上传记录 · 本设备上传记录 · 1 张".
+      setStatus(
+        (galleryRootFolder?.__local
+          ? "仅本设备上传记录（未连上 Drive） · "
+          : "Original · " + (galleryRootFolder ? galleryRootFolder.name : "图片") + " · ") +
+        galleryFiles.length +
+        " 张"
+      );
+    }
+  } catch (error) {
+    if (window.DriveNavigation.isRefreshing()) return;
+    console.error(error);
+    setStatus([401, 403].includes(error?.status) ? "Drive 访问受限" : "读取目录失败");
+    if ([401, 403].includes(error?.status)) document.getElementById("authBtn").style.display = "inline-block";
+    showError(error.message || String(error));
+  }
 });
 
 setInterval(refreshWorkerAccessToken, 30 * 60 * 1000);
@@ -3532,7 +3641,7 @@ window.addEventListener("focus", refreshWorkerAccessToken);
 
 
 window.DriveNavigation.beforeLeave(() => {
-  if (!galleryRootFolder || !galleryTreeRoot) return;
+  if (!galleryRootFolder || galleryRootFolder.__local || !galleryTreeRoot) return;
   const index = window.DriveMediaIndex;
   const file = galleryFiles[currentIndex];
   if (file) window.DriveNavigation.remember(file);

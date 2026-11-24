@@ -11,9 +11,19 @@
  * 7. 原生视频由页面 preload=auto 提供首选路径；异常 MP4 由页面的 MSE Rescue 负责暂停态续缓冲。
  */
 
-const MEDIA_PREFIX = "/drive-original-player/media/";
+// The app pages request media at ./media/, which resolves to /site/media/ (player)
+// and /site/gallery/media/ (gallery). Keep the legacy prefix too so old cached pages
+// and bookmarks keep working. The longest prefix must be checked first in fetch().
+const MEDIA_PREFIXES = [
+  "/drive-original-player/site/gallery/media/",
+  "/drive-original-player/site/media/",
+  "/site/gallery/media/",
+  "/site/media/",
+  "/drive-original-player/gallery/media/",
+  "/drive-original-player/media/"
+];
 const AUTH_STATE_CACHE = "drive-original-player-auth-v2";
-const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB：比旧版 16 MB 更适合 seek
+const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB：慢网下减少往返；配合可缓存的 206 响应，拖动更顺
 
 // 不再只保存一个 currentFileId。
 // 批量播放/切换视频时，不同文件可以同时存在短暂的请求。
@@ -202,12 +212,16 @@ self.addEventListener("message", event => {
   }
 });
 
+function mediaPrefixFor(pathname) {
+  return MEDIA_PREFIXES.find(prefix => pathname.startsWith(prefix)) || null;
+}
+
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
 
   if (
     url.origin === self.location.origin &&
-    url.pathname.startsWith(MEDIA_PREFIX)
+    mediaPrefixFor(url.pathname)
   ) {
     event.respondWith(
       streamDriveFile(event.request, url)
@@ -314,7 +328,8 @@ function cleanMediaHeaders(
 
   out.delete("Content-Disposition");
   out.set("Accept-Ranges", "bytes");
-  out.set("Cache-Control", "no-store");
+  // 允许浏览器缓存已取回的分片：拖动进度条时命中本地缓存，不必每次重下
+  out.set("Cache-Control", "private, max-age=600");
 
   if (!out.get("Content-Type")) {
     out.set("Content-Type", fallbackType);
@@ -337,8 +352,9 @@ function cleanMediaHeaders(
 }
 
 async function streamDriveFile(request, url) {
+  const prefix = mediaPrefixFor(url.pathname);
   const fileId = decodeURIComponent(
-    url.pathname.substring(MEDIA_PREFIX.length)
+    url.pathname.substring(prefix.length)
   );
 
   const state = await getFileState(fileId);

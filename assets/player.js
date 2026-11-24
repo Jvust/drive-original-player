@@ -11,7 +11,18 @@
   let currentVideoIndex = -1;
   let videoTreeRoot = null;
   let videoRootFolder = null;
-  const VIDEO_ROOT_FOLDER_NAME = "1433223";
+  // 收藏目录：用户自选 > 专用版固定 > 默认 1433223（与图片收藏共用同一偏好）
+const VIDEO_ROOT_PREF = (() => {
+  try {
+    if (window.HoshiRootPref) {
+      const cur = window.HoshiRootPref.current();
+      return { name: cur.name || "1433223", id: cur.id || "" };
+    }
+  } catch (_) { /* 回退默认 */ }
+  return { name: "1433223", id: "" };
+})();
+const VIDEO_ROOT_FOLDER_NAME = VIDEO_ROOT_PREF.name || "1433223";
+const VIDEO_ROOT_FOLDER_ID = VIDEO_ROOT_PREF.id || "";
   const expandedVideoFolders = new Set();
 
   let videoPlayerEventsReady = false;
@@ -2193,7 +2204,9 @@ async function initServiceWorker() {
 
       if (
         isDriveFolder(folder) &&
-        folder.name === VIDEO_ROOT_FOLDER_NAME
+        (VIDEO_ROOT_FOLDER_ID
+          ? folder.id === VIDEO_ROOT_FOLDER_ID
+          : folder.name === VIDEO_ROOT_FOLDER_NAME)
       ) {
         // 如果路径中出现多个同名目录，继续向上，
         // 最终使用最上层的 1433223。
@@ -4186,12 +4199,149 @@ async function initServiceWorker() {
           return;
         }
 
-        showError(
-          "视频文件已经成功读取，但浏览器无法解码这个视频。\\n\\n" +
-          "最兼容的是：MP4 + H.264/AVC + AAC。"
-        );
+        // 先判断真实原因：授权失效 / 网络读取失败 / 内容不是视频 / 真的解码不了
+        setStatus("播放失败，正在判断原因…");
+        classifyMediaFailure(document.getElementById("player")).then(function (info) {
+          var text;
+          if (info.kind === "auth") {
+            text = "授权已失效（HTTP " + info.status + "）。请点右上角「连接 Google Drive」重新授权后再播放。";
+          } else if (info.kind === "network") {
+            text = "读取失败（HTTP " + info.status + "）：网络或中继异常，可稍后重试。";
+          } else if (info.kind === "wrongbody") {
+            text = "服务器返回的不是视频数据（" + (info.type || "未知类型") + "），通常是授权或中继的问题。";
+          } else if (info.kind === "unreachable") {
+            text = "连不上媒体地址：" + (info.detail || "网络不可用") + "。";
+          } else {
+            text = "视频文件已经成功读取，但浏览器无法解码这个视频（MKV / H.265(HEVC) 最常见）。可用下面的「用 XPlayer 播放」交给完整解码器。";
+          }
+          showError(text);
+          setStatus("播放未成功");
+        });
+
+        // Android：交给能解 HEVC 的播放器（本机中继 + 系统播放器选择器）
+        try {
+          var host = window.AndroidHost;
+          if (host && typeof host.openInPlayer === "function") {
+            var file = videoPlaylist[currentVideoIndex];
+            var box = document.getElementById("error");
+            if (box && file && file.id) {
+              if (stale) stale.remove();
+              var staleBundled = document.getElementById("openBundledPlayerBtn");
+              if (staleBundled) staleBundled.remove();
+              // 首选：内置 XPlayer（自带完整解码器，MKV/HEVC 基本都能放）
+              if (typeof host.openInBundledPlayer === "function") {
+                var bundled = document.createElement("button");
+                bundled.id = "openBundledPlayerBtn";
+                bundled.type = "button";
+                var installed = false;
+                try { installed = !!(host.hasBundledPlayer && host.hasBundledPlayer()); } catch (_) { installed = false; }
+                bundled.textContent = installed ? "用 XPlayer 播放" : "安装内置播放器";
+                bundled.style.cssText = "margin-left:10px;padding:6px 12px;border-radius:8px;border:1px solid #2b3757;background:#2f4bff;color:#fff";
+                bundled.addEventListener("click", function () {
+                  if (!installed) { host.installBundledPlayer(); return; }
+                  try {
+                    if (typeof host.probeRelay === "function") {
+                      var raw = host.probeRelay(file.id);
+                      var info = typeof raw === "string" ? JSON.parse(raw) : raw;
+                      var line = "中继自检：" + (info.error ? ("失败 " + info.error) : ("HTTP " + info.status + " " + (info.type || "") + " " + (info.length || 0) + " 字节"));
+                      var box2 = document.getElementById("error");
+                      if (box2) box2.textContent = box2.textContent + "\n" + line + "\n" + (info.url || "");
+                    }
+                  } catch (e) { }
+                  host.openInBundledPlayer(file.id, file.name || "");
+                });
+                box.parentNode.insertBefore(bundled, box.nextSibling);
+              }
+              var staleInApp = document.getElementById("openInAppPlayerBtn");
+              if (staleInApp) staleInApp.remove();
+              // 首选：星映自带的系统播放器（MediaPlayer 能解 MKV/HEVC 时不离开 App）
+              if (typeof host.openInAppPlayer === "function") {
+                var inApp = document.createElement("button");
+                inApp.id = "openInAppPlayerBtn";
+                inApp.type = "button";
+                inApp.textContent = "用内置播放器打开";
+                inApp.style.cssText = "margin-left:10px;padding:6px 12px;border-radius:8px;border:1px solid #2b3757;background:#172038;color:inherit";
+                inApp.addEventListener("click", function () { host.openInAppPlayer(file.id, file.name || ""); });
+                box.parentNode.insertBefore(inApp, box.nextSibling);
+              }
+              var anchorEl = document.getElementById("openInAppPlayerBtn") || box;
+              if (stale) stale.remove();
+              var btn = document.createElement("button");
+              btn.id = "openInPlayerBtn";
+              btn.type = "button";
+              btn.textContent = "用其它播放器打开";
+              btn.style.cssText = "margin-left:10px;padding:6px 12px;border-radius:8px;border:1px solid #2b3757;background:#172038;color:inherit";
+              btn.addEventListener("click", function () { host.openInPlayer(file.id, file.name || ""); });
+              box.parentNode.insertBefore(btn, anchorEl.nextSibling);
+            }
+          }
+        } catch (_) { }
       }
     );
+  }
+
+  // 顶栏常驻入口：随时安装/打开 XPlayer，不用先打开视频
+  (function wireXPlayerEntry() {
+    var host = window.AndroidHost;
+    var btn = document.getElementById("xplayerBtn");
+    if (!host || !btn || typeof host.openBundledPlayerApp !== "function") return;
+    var installed = false;
+    try { installed = !!(host.hasBundledPlayer && host.hasBundledPlayer()); } catch (_) { installed = false; }
+    btn.textContent = installed ? "XPlayer" : "装 XPlayer";
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+      if (installed) host.openBundledPlayerApp();
+      else host.installBundledPlayer();
+    });
+  })();
+  // 常驻出口：只要当前有视频，就允许直接交给 XPlayer（即使 WebView 既不报错也放不出来）
+  (function wireBundledPlayButton() {
+    var host = window.AndroidHost;
+    if (!host || typeof host.openInBundledPlayer !== "function") return;
+    var btn = document.getElementById("bundledPlayBtn");
+    if (!btn) return;
+    var installed = false;
+    try { installed = !!(host.hasBundledPlayer && host.hasBundledPlayer()); } catch (_) { installed = false; }
+    btn.textContent = installed ? "用 XPlayer 播放" : "安装 XPlayer";
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+      var file = videoPlaylist[currentVideoIndex];
+      var id = (file && file.id) || currentFileId;
+      var name = (file && file.name) || "";
+      if (!id) { showError("还没有打开任何视频"); return; }
+      if (installed) host.openInBundledPlayer(id, name);
+      else host.installBundledPlayer();
+    });
+  })();
+
+  /**
+   * 判断这次失败到底是「解码不支持」还是「读取失败」：
+   * 直接对当前媒体地址发一个 1 字节的 Range 请求，看真实状态码与类型。
+   */
+  async function classifyMediaFailure(videoEl) {
+    try {
+      var src = videoEl && (videoEl.currentSrc || videoEl.src);
+      if (!src) return { kind: "unknown", detail: "没有媒体地址" };
+      var response = await fetch(src, { headers: { Range: "bytes=0-1" }, cache: "no-store" });
+      var type = response.headers.get("content-type") || "";
+      var status = response.status;
+      if (status === 401 || status === 403) {
+        return { kind: "auth", status: status, type: type };
+      }
+      if (status >= 400 || status === 0) {
+        return { kind: "network", status: status, type: type };
+      }
+      var buf = await response.arrayBuffer();
+      var head = new Uint8Array(buf.slice(0, 12));
+      var ascii = "";
+      for (var i = 0; i < head.length; i++) ascii += String.fromCharCode(head[i]);
+      if (/^\s*[<{]/.test(ascii)) {
+        return { kind: "wrongbody", status: status, type: type, head: ascii };
+      }
+      return { kind: "decode", status: status, type: type, head: ascii };
+    } catch (err) {
+      return { kind: "unreachable", detail: String(err && err.message || err) };
+    }
   }
 
   function initVideoPlayerEventsOnce() {

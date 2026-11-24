@@ -51,6 +51,7 @@
   }
   function decorateLinks() { document.querySelectorAll("a[href]").forEach(decorate); }
   function remember(file) {
+    if (refreshing || window.DriveMediaIndex?.isObsolete()) return;
     selected = fileState(file);
     try {
       const saved = readSelections(); saved[page] = selected;
@@ -65,17 +66,23 @@
     }
   }
   async function refreshLibrary() {
-    if (navigating) return;
+    if (refreshing) return;
     navigating = refreshing = true;
     const url = new URL(location.href);
-    const state = selected || parse(url.searchParams.get("state"));
-    if (state) url.searchParams.set("state", JSON.stringify(state));
+    if (page === "gallery") {
+      url.searchParams.delete("state");
+      url.searchParams.set("rediscover", "1");
+      try { sessionStorage.removeItem(key); } catch (_) {}
+    } else {
+      const state = selected || parse(url.searchParams.get("state"));
+      if (state) url.searchParams.set("state", JSON.stringify(state));
+    }
     url.searchParams.set("view", page);
     try { await window.DriveMediaIndex?.clear(); }
-    finally { location.assign(url.href); }
+    finally { location.replace(url.href); }
   }
   window.DriveNavigation = {
-    remember, refreshLibrary,
+    remember, refreshLibrary, isRefreshing: () => refreshing,
     beforeLeave(handler) { leaveHandlers.add(handler); return () => leaveHandlers.delete(handler); }
   };
   document.addEventListener("click", event => {
@@ -94,7 +101,7 @@
         await window.DriveMediaIndex?.flush();
         decorate(anchor);
       } catch (error) { console.warn("保存目录缓存失败，继续切换", error); }
-      finally { location.assign(anchor.href); }
+      finally { if (!refreshing) location.assign(anchor.href); }
     })();
   }, true);
   window.addEventListener("pagehide", () => { capture(); window.DriveMediaIndex?.flush(); });
@@ -102,6 +109,13 @@
     navigating = false;
     decorateLinks();
     if (event.persisted) {
+      if (refreshing || window.DriveMediaIndex?.isObsolete()) {
+        if (page === "gallery") {
+          refreshing = false;
+          refreshLibrary();
+        } else location.reload();
+        return;
+      }
       window.DriveMediaIndex?.ready(true).then(decorateLinks);
       window.refreshWorkerAccessToken?.().catch(console.error);
     }

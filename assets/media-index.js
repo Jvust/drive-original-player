@@ -121,6 +121,10 @@
       return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
     } catch (_) { return null; }
   }
+  function isObsolete() {
+    try { return !!tabId && storage()?.getItem(TAB_KEY) !== tabId; }
+    catch (_) { return false; }
+  }
   function ready(refresh = false) {
     if (loading && !refresh) return loading;
     loading = (async () => {
@@ -128,7 +132,7 @@
       const scope = await currentAccountScope();
       accountScope = scope;
       const result = scope ? await transaction("readonly", store => store.get(tabId)) : { ok: false };
-      if (clearing) return;
+      if (clearing || isObsolete()) return;
       if (memory?.accountScope && memory.accountScope !== scope) {
         memory = null;
         try { storage()?.removeItem?.(CACHE_KEY); } catch (_) {}
@@ -158,7 +162,7 @@
     if (flushing) return flushing;
     flushing = (async () => {
       await ready();
-      while (!clearing && memory && written < revision) {
+      while (!clearing && !isObsolete() && memory && written < revision) {
         if (!db || !accountScope) return hotSaved;
         const at = revision, snapshot = clone(memory);
         snapshot.accountScope = accountScope;
@@ -171,14 +175,14 @@
     return flushing;
   }
   function loadSnapshot() {
-    if (!valid(memory)) return null;
+    if (clearing || isObsolete() || !valid(memory)) return null;
     const snapshot = clone(memory);
     hydrate(snapshot.tree);
     return snapshot;
   }
-  function saveSnapshot(rootFolder, rootNode, complete = true, sourceFile = null) {
-    if (clearing || !rootFolder?.id || rootNode?.file?.id !== rootFolder.id) return false;
-    const old = memory?.rootFolder.id === rootFolder.id ? memory : null;
+  function saveSnapshot(rootFolder, rootNode, complete = true, sourceFile = null, replace = false) {
+    if (clearing || isObsolete() || !rootFolder?.id || rootNode?.file?.id !== rootFolder.id) return false;
+    const old = !replace && memory?.rootFolder.id === rootFolder.id ? memory : null;
     const tree = mergeTrees(old?.tree, copyTree(rootNode));
     const sources = new Map((old?.sources || []).map(f => [f.id, f]));
     if (sourceFile?.id) sources.set(sourceFile.id, copyFile(sourceFile));
@@ -189,7 +193,7 @@
     return true;
   }
   function saveView(page, rootId, state) {
-    if (clearing || memory?.rootFolder.id !== rootId || !["player", "gallery"].includes(page)) return;
+    if (clearing || isObsolete() || memory?.rootFolder.id !== rootId || !["player", "gallery"].includes(page)) return;
     memory.views = { ...memory.views, [page]: clone(state) };
     persist();
   }
@@ -198,14 +202,20 @@
   }
   async function clear() {
     clearing = true;
+    if (isObsolete()) return;
+    memory = null;
+    // Detach the next page before attempting best-effort deletion of the old IndexedDB record.
+    try {
+      const cache = storage();
+      cache?.removeItem(CACHE_KEY);
+      cache?.setItem(TAB_KEY, window.crypto?.randomUUID?.() || Date.now() + "-" + Math.random());
+    } catch (_) {}
     if (flushing) await flushing;
     await ready();
-    memory = null;
-    try { storage()?.removeItem?.(CACHE_KEY); } catch (_) {}
     await transaction("readwrite", store => store.delete(tabId));
   }
   window.DriveMediaIndex = {
-    ready, flush, clear, getFile, saveView, getView, countFolders, findFile, findFirstFile,
+    ready, flush, clear, isObsolete, getFile, saveView, getView, countFolders, findFile, findFirstFile,
     loadSnapshot, isFolderScanned, saveSnapshot,
     findSnapshotForFile(id) { const s = loadSnapshot(); return getFile(s, id) ? s : null; },
     findSnapshotForRoot(id) { const s = loadSnapshot(); return s?.rootFolder.id === id ? s : null; }

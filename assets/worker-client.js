@@ -3,7 +3,9 @@
 (() => {
   "use strict";
   let registrationPromise;
-  const scriptURL = new URL("./sw.js?v=navigation-2", location.href).href;
+  // Bump when SW routing/behavior changes so an old worker cannot keep serving
+  // stale /drive-original-player/media/ prefixes.
+  const scriptURL = new URL("./sw.js?v=media-prefix-4", location.href).href;
   function waitForController() {
     const sw = navigator.serviceWorker;
     return new Promise((resolve, reject) => {

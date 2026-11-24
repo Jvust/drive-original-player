@@ -28,10 +28,19 @@ self.addEventListener("message", event => {
     event.waitUntil(saveAuthState());
   }
 });
+// The gallery page requests media at ./media/, i.e. /site/gallery/media/.
+// Keep the legacy prefix for old cached pages. Longest prefix first.
+const GALLERY_MEDIA_PREFIXES = [
+  "/site/gallery/media/",
+  "/drive-original-player/gallery/media/"
+];
+function galleryMediaPrefix(pathname) {
+  return GALLERY_MEDIA_PREFIXES.find(prefix => pathname.startsWith(prefix)) || null;
+}
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
-  const prefix = "/drive-original-player/gallery/media/";
-  if (url.origin === self.location.origin && url.pathname.startsWith(prefix)) {
+  const prefix = galleryMediaPrefix(url.pathname);
+  if (url.origin === self.location.origin && prefix) {
     event.respondWith(streamDriveImage(event.request, url, prefix));
   }
 });
